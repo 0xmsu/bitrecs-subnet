@@ -14,20 +14,21 @@ requires-python = ">=3.11"
 license = {text = "MIT"}
 
 dependencies = [
-    "bittensor==9.9.0",
-    "bittensor-cli==9.10.1",
+    "bittensor==9.10.1",
+    "bittensor-cli==9.11.2",
     "substrate-interface==1.7.11",
-    "cryptography==45.0.4",
+    "async-substrate-interface==1.5.2",
+    "cryptography==45.0.5",
     "starlette==0.37.2",
-    "pydantic==2.10.4",
+    "pydantic==2.11.7",
     "numpy==2.0.2",
-    "python-dotenv==1.0.1",
-    "openai==1.93.0",
+    "python-dotenv==1.1.1",
+    "openai==1.108.1",
     "pandas==2.2.3",
-    "json-repair==0.47.6",
-    "jsonschema==4.24.0",
-    "wandb==0.20.1",
-    "tiktoken==0.9.0",
+    "json-repair==0.50.1",
+    "jsonschema==4.25.1",
+    "wandb==0.21.1",
+    "tiktoken==0.11.0",
     "slowapi==0.1.9"
 ]
 
@@ -52,8 +53,11 @@ test = [
 ]
 
 [tool.setuptools]
-packages = ["bitrecs"]
 include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bitrecs*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "bitrecs.__version__"}

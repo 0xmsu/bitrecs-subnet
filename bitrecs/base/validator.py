@@ -53,12 +53,13 @@ from bitrecs.utils.distance import (
     rec_list_to_set, 
     select_most_similar_bitrecs
 )
+from bitrecs.utils.reasoning import ReasonReport
 from bitrecs.utils.uids import get_all_miner_uids
 from bitrecs.validator.reward import (
-    BASE_REWARD, 
     CONSENSUS_BONUS_MULTIPLIER, 
     SUSPECT_MINER_DECAY, 
-    get_rewards)
+    get_rewards    
+)
 from bitrecs.validator.rules import validate_br_request
 from bitrecs.utils.logging import (    
     log_miner_responses_to_sql,
@@ -67,6 +68,12 @@ from bitrecs.utils.logging import (
 from bitrecs.utils.wandb import WandbHelper
 from bitrecs.commerce.user_action import UserAction
 
+
+original_trace = bt.logging.trace
+def filtered_trace(message, *args, **kwargs):
+    if "Unexpected header key encountered" not in message:
+        original_trace(message, *args, **kwargs)
+bt.logging.trace = filtered_trace
 
 API_QUEUE = SimpleQueue()
 
@@ -159,6 +166,7 @@ class BaseValidatorNeuron(BaseNeuron):
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
         self.lock = asyncio.Lock()
+        self.dendrite_timeout = min(10, CONST.MAX_DENDRITE_TIMEOUT)
               
         self.total_uids = set()
         self.batch_seen_uids = set()
@@ -186,7 +194,8 @@ class BaseValidatorNeuron(BaseNeuron):
         self.tempo_batch_index = 0
         self.batches_completed = 0
 
-        #self.update_total_uids()
+        self.reasoning_reports: List[ReasonReport] = []    
+        self.missing_evals_uids = set()    
         
         write_node_info(
             network=self.network,
@@ -284,16 +293,7 @@ class BaseValidatorNeuron(BaseNeuron):
 
         except Exception as e:
             bt.logging.error(f"Failed to create Axon initialize with exception: {e}")
-            pass
-
-
-    async def concurrent_forward(self):
-        # coroutines = [
-        #     self.forward()
-        #     for _ in range(self.config.neuron.num_concurrent_forwards)
-        # ]
-        # await asyncio.gather(*coroutines)
-        raise NotImplementedError("concurrent_forward not implemented")
+            pass   
 
 
     async def analyze_similar_requests(self, requests: List[BitrecsRequest]) -> Optional[List[BitrecsRequest]]:
@@ -301,11 +301,13 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.warning(f"Too few requests to analyze: {len(requests)} on step {self.step}")
             return
         
-        async def get_dynamic_top_n(num_requests: int) -> int:
-            if num_requests < 4:
-                return 2
-            #return max(2, min(5, num_requests // 3))
-            return max(3, min(8, num_requests // 3)) #Wider consensus set
+        async def get_dynamic_top_n(num_requests: int, min_n: int = 2, max_n: int = 8, min_requests: int = 2, max_requests: int = CONST.QUERY_BATCH_SIZE) -> int:
+            if num_requests <= min_requests:
+                return min_n
+            if num_requests >= max_requests:
+                return max_n
+            scale = (max_n - min_n) / (max_requests - min_requests)
+            return min_n + int((num_requests - min_requests) * scale)
   
         st = time.perf_counter()
         try:
@@ -325,8 +327,7 @@ class BaseValidatorNeuron(BaseNeuron):
                         this_model = f"{this_model} - Miner: {br.miner_uid}"
                         if dendrite_time < self.r_limit or axon_time < self.r_limit:
                             this_model = f"{this_model} - X"
-                        models_used.append(this_model)
-                        
+                        models_used.append(this_model)                        
                 except Exception as e:
                     bt.logging.error(f"Error extracting SKUs from results: {e}")
                     continue                    
@@ -338,15 +339,16 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.info(f"\033[1;32mTop {top_n} of {len(requests)} successful bitrecs \033[0m")
             most_similar = select_most_similar_bitrecs(valid_requests, top_n)
             if not most_similar:
-                bt.logging.warning(f"\033[33mNo similar recs found in this round step: {self.step} \033[0m")
+                bt.logging.warning(f"\033[33mNo similar recs found in step: {self.step} \033[0m")
                 return
             if self.config.logging.trace:
                 most_similar_indices = [valid_requests.index(req) for req in most_similar]                
                 matrix = display_rec_matrix(valid_recs, models_used, highlight_indices=most_similar_indices)
                 bt.logging.trace(matrix)
 
-            for sim in most_similar:                
-                bt.logging.info(f"\033[32mMiner {sim.miner_uid} {sim.models_used}\033[0m - batch: {sim.site_key}")                
+            bt.logging.trace("Election candidates:")
+            for sim in most_similar:
+                bt.logging.info(f"\033[32mMiner {sim.miner_uid} {sim.models_used}\033[0m")
 
             et = time.perf_counter()
             diff = et - st
@@ -354,7 +356,7 @@ class BaseValidatorNeuron(BaseNeuron):
             return most_similar
         
         except Exception as e:            
-            bt.logging.error(f"analyze_similar_requests failed with exception: {e}")            
+            bt.logging.error(f"analyze_similar_requests failed with exception: {e}")
             bt.logging.error(traceback.format_exc())
             return
         
@@ -364,19 +366,16 @@ class BaseValidatorNeuron(BaseNeuron):
         try:
             ports_to_clean = set()
             if not axons:
-                return
-            
+                return            
             for axon in axons:
                 try:
                     port = int(axon.port)
                     ports_to_clean.add(port)
                 except (ValueError, AttributeError):
-                    continue
-            
+                    continue            
             if not ports_to_clean:
                 bt.logging.warning("No valid miner ports found for cleanup")
-                return
-                
+                return                
             bt.logging.trace(f"Cleaning up connections to ports: {sorted(ports_to_clean)}")
             for port in ports_to_clean:
                 subprocess.run(['ss', '-K', 'state', 'close-wait', 'dport', '=', f':{port}'], 
@@ -410,17 +409,16 @@ class BaseValidatorNeuron(BaseNeuron):
             return False
         return True
 
+
     def log_grouped_by_hotkey(self, responses):
         grouped = defaultdict(list)
         for r in responses:
             grouped[r.dendrite.hotkey].append(r)
-
         for hotkey, group in grouped.items():
             bt.logging.warning(f"\n=== dendrite.hotkey: {hotkey} ({len(group)} responses) ===")
             for response in group:
-                bt.logging.warning(
-                    f"  IP {response.axon.ip} | dhk: {response.dendrite.hotkey} | ahk: {response.axon.hotkey} | uid: {response.miner_uid}"
-                )
+                bt.logging.warning(f"IP {response.axon.ip} | dhk: {response.dendrite.hotkey} | ahk: {response.axon.hotkey} | uid: {response.miner_uid}")
+
 
     async def main_loop(self):
         """Main loop for the validator."""
@@ -437,11 +435,9 @@ class BaseValidatorNeuron(BaseNeuron):
         try:
             while True:
                 try:
-
                     api_enabled = self.config.api.enabled
                     api_exclusive = self.config.api.exclusive
                     bt.logging.trace(f"api_enabled: {api_enabled} | api_exclusive {api_exclusive}")
-
                     synapse_with_event: Optional[SynapseWithEvent] = None
                     try:
                         synapse_with_event = API_QUEUE.get()
@@ -458,7 +454,11 @@ class BaseValidatorNeuron(BaseNeuron):
                         if not validate_br_request(synapse_with_event.input_synapse):
                             bt.logging.error("Request failed Validation, skipped.")
                             synapse_with_event.event.set()
-                            continue                        
+                            continue
+                        if CONST.REASONING_SCORING_ENABLED and (not self.reasoning_reports or len(self.reasoning_reports) <= 0):                          
+                            bt.logging.error("FATAL - No scoring reports, skipped.")
+                            synapse_with_event.event.set()
+                            continue
                         
                         chosen_uids : list[int] = await self.get_next_batch()
                         if len(chosen_uids) < CONST.MIN_QUERY_BATCH_SIZE:
@@ -474,11 +474,11 @@ class BaseValidatorNeuron(BaseNeuron):
                         responses = await self.dendrite.forward(
                             axons = chosen_axons, 
                             synapse = api_request,
-                            timeout = min(5, CONST.MAX_DENDRITE_TIMEOUT),
+                            timeout = self.dendrite_timeout,
                             deserialize=False,
                             run_async=True
                         )
-                        #TODO: 503 error handling async bug?
+                        #Retry logic
                         any_success = any([r for r in responses if r.is_success])
                         if not any_success:
                             bt.logging.error("\033[1;33mRETRY ATTEMPT\033[0m")
@@ -486,7 +486,7 @@ class BaseValidatorNeuron(BaseNeuron):
                             responses = await self.dendrite.forward(
                                 axons = chosen_axons, 
                                 synapse = api_request,
-                                timeout = min(5, CONST.MAX_DENDRITE_TIMEOUT),
+                                timeout = self.dendrite_timeout,
                                 deserialize=False,
                                 run_async=True
                             )
@@ -494,44 +494,32 @@ class BaseValidatorNeuron(BaseNeuron):
                             if not any_success: #don't penalize the entire set, just exit
                                 bt.logging.error("\033[1;31mRETRY FAILED - NO SUCCESSFUL RESPONSES\033[0m")
                                 self.bad_set_count += 1
+                                loop = asyncio.get_event_loop()
+                                loop.run_in_executor(None, log_miner_responses_to_sql, self.step, responses, None, None)
                                 synapse_with_event.event.set()
                                 continue
 
                         et = time.perf_counter()
                         bt.logging.trace(f"Miners responded with {len(responses)} responses in \033[1;32m{et-st:0.4f}\033[0m seconds")
-                        if not self.check_response_structure(responses):
-                            #bt.logging.error("\033[31mResponse structure check failed, skipping this batch\033[0m")
+                        if not self.check_response_structure(responses):                            
+                            bt.logging.error("\033[1;31m Invalid response structure detected - skipping batch \033[0m")
                             self.bad_set_count += 1
-                            #synapse_with_event.event.set()
-                            #continue
+                            loop = asyncio.get_event_loop()
+                            loop.run_in_executor(None, log_miner_responses_to_sql, self.step, responses, None, None)
+                            synapse_with_event.event.set()
+                            continue
 
                         rewards = get_rewards(self.wallet.hotkey.ss58_address,
                                               ground_truth=api_request,
                                               responses=responses,
+                                              reasoning_reports=self.reasoning_reports,
                                               actions=self.user_actions,
                                               r_limit=self.r_limit,
-                                              batch_size=CONST.QUERY_BATCH_SIZE)
+                                              batch_size=CONST.QUERY_BATCH_SIZE,
+                                              entity_threshold=CONST.BATCH_ENTITY_THRESHOLD)
                         
                         if not len(chosen_uids) == len(responses) == len(rewards):
                             bt.logging.error("MISMATCH in lengths of chosen_uids, responses and rewards")
-                            synapse_with_event.event.set()
-                            continue
-                        
-                        failure_rate = np.sum(rewards == 0) / len(rewards)
-                        if failure_rate >= CONST.BATCH_FAILURE_THRESHOLD:
-                            self.bad_set_count += 1
-                            bt.logging.error(f"ERROR - Failure threshold ({failure_rate:.2%} > {CONST.BATCH_FAILURE_THRESHOLD:.2%})")
-                            bt.logging.error(f"Total bad sets: \033[31m{self.bad_set_count}\033[0m")
-                            orphans = [(uid, reward) for uid, reward in zip(chosen_uids, rewards) if reward > 0]
-                            if orphans:
-                                bt.logging.warning("\033[33mOrphaned miners!\033[0m")
-                                for uid, reward in orphans:
-                                    self.batch_orphan_uids.add(uid)
-                                    bt.logging.warning(f"Orphan UID {uid}: potential reward={reward:.4f}")
-                                if CONST.REWARD_ORPHANS:
-                                    self.update_successful_scores(rewards, chosen_uids)
-                                    bt.logging.trace(f"\033[32mOrphans rewarded with {BASE_REWARD:.4f} each\033[0m")
-                            self.decay_suspects()
                             synapse_with_event.event.set()
                             continue
                         
@@ -545,67 +533,85 @@ class BaseValidatorNeuron(BaseNeuron):
                             if top_k:
                                 winner = safe_random.sample(top_k, 1)[0]
                                 selected_rec = responses.index(winner)
+                                
                                 MIN_UNIQUE_ENTITIES = 2
-                                FRACTION_UNIQUE_ENTITIES = 0.5
+                                FRACTION_UNIQUE_ENTITIES = 0.67
                                 entities = set([br.axon.ip for br in top_k])
                                 entity_size = len(entities)
-                                if entity_size >= MIN_UNIQUE_ENTITIES and entity_size >= FRACTION_UNIQUE_ENTITIES * len(top_k):
+
+                                model_set = set([br.models_used[0] for br in top_k if br.models_used])
+                                model_diversity = len(model_set)
+                                MIN_UNIQUE_MODELS = 2
+                                FRACTION_UNIQUE_MODELS = 0.50
+
+                                if (entity_size >= MIN_UNIQUE_ENTITIES
+                                    and entity_size >= FRACTION_UNIQUE_ENTITIES * len(top_k)
+                                    and model_diversity >= MIN_UNIQUE_MODELS
+                                    and model_diversity >= FRACTION_UNIQUE_MODELS * len(top_k)):
+                                    
                                     rewards[selected_rec] *= CONSENSUS_BONUS_MULTIPLIER
-                                    bt.logging.info(f"\033[1;32mConsensus miner: {winner.miner_uid} from {winner.models_used} awarded bonus - batch: {winner.site_key} \033[0m")
                                     consensus_bonus_applied = True
+                                    bt.logging.info(f"\033[1;32mConsensus Miner:{winner.miner_uid}:{winner.models_used}\033[0m")
                                 else:
-                                    bt.logging.warning(f"\033[33mNo consensus bonus for round, low diversity: {entity_size} \033[0m")
-                                bt.logging.trace(winner)
+                                    bt.logging.warning(f"\033[33mNo consensus bonus for round, low diversity: {entity_size}:{model_diversity} \033[0m")
+                                
                         else:
-                            bt.logging.error("\033[1;33mSkipped Scoring - no valid candidates in responses \033[0m")
-                            self.decay_suspects()
+                            bt.logging.error(f"\033[1;33mNo valid candidates in {len(responses)} responses, request aborted.\033[0m")
+                            self.update_scores(rewards, chosen_uids)
+                            self.bad_set_count += 1
+                            loop = asyncio.get_event_loop()
+                            loop.run_in_executor(None, log_miner_responses_to_sql, self.step, responses, rewards, None)                            
                             synapse_with_event.event.set()
                             continue
                         
                         if selected_rec is None:
-                            bt.logging.error("\033[1;31mSkipped Scoring - no consensus rec in responses \033[0m")
-                            self.decay_suspects()
+                            bt.logging.error(f"\033[1;31mNo consensus rec elected in {len(responses)} responses, request aborted.\033[0m")
+                            self.update_scores(rewards, chosen_uids)
+                            self.bad_set_count += 1
+                            loop = asyncio.get_event_loop()
+                            loop.run_in_executor(None, log_miner_responses_to_sql, self.step, responses, rewards, None)                            
                             synapse_with_event.event.set()
                             continue
                     
                         elected : BitrecsRequest = responses[selected_rec]
-                        elected.context = ""
+                        elected.context = "[]"
                         elected.user = ""
+                        elected.models_used = [CONST.RE_MODEL_NAME.sub("", m) for m in elected.models_used]
                         
-                        bt.logging.info(f"\033[1;32mFINAL MINER: {elected.miner_uid}\033[0m")
-                        bt.logging.info(f"\033[1;32mFINAL MODEL: {elected.models_used}\033[0m")
-                        bt.logging.info(f"\033[1;32mFINAL RESULT: {elected}\033[0m")
-                        bt.logging.info(f"\033[1;32mFINAL BATCH: {elected.site_key}\033[0m")
+                        bt.logging.info(f"\033[1;32mMINER: {elected.miner_uid}\033[0m")
+                        bt.logging.info(f"\033[1;32mHOTKEY: {elected.axon.hotkey[:16]}\033[0m")
+                        bt.logging.info(f"\033[1;32mMODEL: {elected.models_used}\033[0m")
+                        bt.logging.info(f"\033[1;32mBATCH: {elected.site_key}\033[0m")
+                        bt.logging.info(f"\033[1;32mRESULT: {elected}\033[0m")
                         if consensus_bonus_applied:
-                            bt.logging.info(f"\033[1;32mBONUS: {CONSENSUS_BONUS_MULTIPLIER}\033[0m")
-                        bt.logging.info(f"\033[1;32mFINAL SCORE: {rewards[selected_rec]}\033[0m")
+                            bt.logging.info(f"\033[1;32mCONSENSUS AWARDED\033[0m")
+                        bt.logging.info(f"\033[1;32mSCORE: {rewards[selected_rec]}\033[0m")
                         
                         if len(elected.results) == 0:
                             bt.logging.error("FATAL - Elected response has no results")
+                            self.bad_set_count += 1
                             synapse_with_event.event.set()
                             continue
                         
                         synapse_with_event.output_synapse = elected
-                        # Mark the synapse as processed, API will then return to the client
                         synapse_with_event.event.set()
-                        self.total_request_in_interval +=1
-                    
-                        bt.logging.info(f"Scored responses: {rewards}")
+                        self.total_request_in_interval +=1                    
+                        
                         self.update_scores(rewards, chosen_uids)
+                        bt.logging.info(f"Scored responses: {rewards}")
                         loop = asyncio.get_event_loop()
-                        loop.run_in_executor(None, log_miner_responses_to_sql, self.step, responses, elected)
-                        bt.logging.trace(f"SQL logging submitted to thread pool - step {self.step}")
+                        loop.run_in_executor(None, log_miner_responses_to_sql, self.step, responses, rewards, elected)
+                        #bt.logging.trace(f"SQL logging submitted to thread pool - step {self.step}")
                         
                     else:
-                        if not api_exclusive: #Regular validator loop  
-                            bt.logging.info("Processing synthetic concurrent forward")
-                            #self.loop.run_until_complete(self.concurrent_forward())
+                        if not api_exclusive:
+                            bt.logging.info("Processing synthetic concurrent forward")                            
                             raise NotImplementedError("concurrent_forward not implemented")
 
                     if self.should_exit:
                         return
                   
-                    if self.step >= 1:
+                    if self.step >= 1 and self.step % 3 == 0:
                         self.sync()
                     
                     self.step += 1
@@ -640,9 +646,11 @@ class BaseValidatorNeuron(BaseNeuron):
             if self.api_server:
                 self.api_server.stop()
 
+
     async def run(self):
         """Initiates and manages the main loop for the validator on the Bitrecs subnet."""
         await self.main_loop()
+
 
     def run_in_background_thread(self):
         """
@@ -656,6 +664,7 @@ class BaseValidatorNeuron(BaseNeuron):
             self.thread.start()
             self.is_running = True
             bt.logging.debug("Started")
+
 
     def stop_run_thread(self):
         """
@@ -671,9 +680,11 @@ class BaseValidatorNeuron(BaseNeuron):
             self.is_running = False
             bt.logging.debug("Stopped")
 
+
     def __enter__(self):
         self.run_in_background_thread()
         return self
+    
 
     def __exit__(self, exc_type, exc_value, traceback):
         """
@@ -689,6 +700,38 @@ class BaseValidatorNeuron(BaseNeuron):
             self.thread.join(5)
             self.is_running = False
             bt.logging.debug("Stopped")
+
+    
+    def emission_control_scores(self, target_uid):
+        scores = self.scores
+        total_score = np.sum(scores)
+
+        if not isinstance(target_uid, int) or target_uid < 0 or target_uid >= len(scores):
+            bt.logging.info(f"target_uid {target_uid} is out of bounds for scores array")
+            return        
+        
+        new_target_score = CONST.EMISSION_CONTROL_RATE * total_score
+
+        # Remaining total weight for other UIDs
+        remaining_weight = (1 - CONST.EMISSION_CONTROL_RATE) * total_score
+
+        # Current total of non-target scores
+        total_other_scores = total_score - scores[target_uid]
+
+        if total_other_scores == 0:
+            bt.logging.warning("All scores are zero except target UID, cannot scale.")
+            return
+
+        # Scale other scores proportionally
+        new_scores = np.zeros_like(scores, dtype=float)
+        for uid in range(len(scores)):
+            if uid == target_uid:
+                new_scores[uid] = new_target_score
+            else:
+                new_scores[uid] = (scores[uid] / total_other_scores) * remaining_weight
+
+        self.scores = new_scores
+
 
     def set_weights(self):
         """Sets the validator weights to the metagraph hotkeys based on the scores."""
@@ -710,8 +753,20 @@ class BaseValidatorNeuron(BaseNeuron):
             bt.logging.warning(f"\033[3;3mCoverage {coverage:.2f}% is below minimum threshold of {min_coverage:.2f}%.\033[0m")
             #return
 
-        # Use normalized scores for weights
-        raw_weights = self.get_normalized_scores()
+        if CONST.EMISSION_CONTROL_ENABLED:
+            bt.logging.trace(f"\033[33mApplying emission control to scores - burning: {CONST.EMISSION_CONTROL_RATE}\033[0m")
+            self.emission_control_scores(CONST.EMISSION_CONTROL_TARGET_UID)
+        
+        # Calculate L1 norm of scores
+        norm = np.linalg.norm(self.scores, ord=1, axis=0, keepdims=True)
+        
+        # Check if the norm is zero or contains NaN values
+        if np.any(norm == 0) or np.isnan(norm).any():
+            norm = np.ones_like(norm)  # Avoid division by zero or NaN
+        
+        # Compute raw_weights using L1 normalization
+        raw_weights = self.scores / norm
+        bt.logging.debug("raw_weights", raw_weights)
 
         # Process the raw weights to final_weights via subtensor limitations.
         try:
@@ -855,44 +910,12 @@ class BaseValidatorNeuron(BaseNeuron):
         decay_count = 0
         bt.logging.info(f"Decaying scores for suspect miners: {self.suspect_miners}")
         for suspect_uid in self.suspect_miners:
-            if suspect_uid not in uids_array and 0 <= suspect_uid < len(self.scores):
-                #old_score = self.scores[suspect_uid]
+            if suspect_uid not in uids_array and 0 <= suspect_uid < len(self.scores):                
                 self.scores[suspect_uid] *= SUSPECT_MINER_DECAY
-                decay_count += 1
-                #bt.logging.trace(f"\033[33mDecayed suspect miner UID {suspect_uid}: {old_score:.6f} -> {self.scores[suspect_uid]:.6f} \033[0m")
+                decay_count += 1                
         if decay_count > 0:
             bt.logging.trace(f"\033[33mDecayed {decay_count} suspect miners\033[0m")
-                
-
-    def update_successful_scores(self, rewards: np.ndarray, uids: list[int]):
-        """
-        On batch failure, still reward those that performed
-        """
-        default_alpha = self.config.neuron.moving_average_alpha
-        rewards = np.asarray(rewards, dtype=np.float32)
-        uids_array = np.array(uids, dtype=np.int64)
-
-        for i, uid in enumerate(uids_array):
-            if rewards[i] > 0:
-                self.scores[uid] = default_alpha * rewards[i] + (1 - default_alpha) * self.scores[uid]
-
-
-    def get_normalized_scores(self):        
-        """fixed ceiling normalization of scores"""
-        scores = self.scores.copy()
-        #nonlinear_power = 1.1
-        nonlinear_power = 1.0
-        max_score = BASE_REWARD * CONSENSUS_BONUS_MULTIPLIER
-        n = len(scores)
-        if n == 0 or max_score <= 0:            
-            return np.zeros_like(scores)
-        transformed = np.power(scores, nonlinear_power)
-        max_sum = n * (max_score ** nonlinear_power)
-        if max_sum == 0:
-            return np.zeros_like(scores)
-        normalized = transformed / max_sum
-        return normalized
-    
+   
 
     def save_state(self):
         if self.first_sync:

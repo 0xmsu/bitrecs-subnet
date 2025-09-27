@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import time
 import pytest
 from typing import List
 from random import SystemRandom
@@ -596,7 +597,7 @@ def test_sample_user_profile():
     
 #@pytest.skip("Skipping test_sample_profile_get_similar_orders, requires database setup")
 def test_sample_profile_get_similar_orders():
-    num_recs = 5
+    num_recs = 8
     profile = get_sample_user_profile()    
     #$products = products_music()[:5000]
     products = products_music()
@@ -628,7 +629,7 @@ def test_sample_profile_get_similar_orders():
     tc = factory.get_token_count(prompt)
     print(f"Token count: {tc}")
 
-    model = "deepseek-r1:70b"
+    #model = "deepseek-r1:70b"
     #model = "mistral-large:latest"
     #model = "gemma3:27b"
     #model = "mistral-nemo"    
@@ -643,13 +644,26 @@ def test_sample_profile_get_similar_orders():
     #model = "meta-llama/llama-4-maverick"
     #model = "qwen/qwen-turbo"    
     #model = "openai/gpt-4.1"
+    #model = "ai21/jamba-mini-1.7"
+    #model = "openrouter/sonoma-dusk-alpha"
+    #model = "openrouter/sonoma-sky-alpha"
+    #model = "google/gemini-2.5-flash-lite"
+    #model = "google/gemini-2.5-flash"        
+    #model = "qwen3:30b-a3b-instruct-2507-q4_K_M"
+    model = "x-ai/grok-4-fast:free"
+
+    #server = LLM.OLLAMA_LOCAL
+    server = LLM.OPEN_ROUTER
 
     print(f"Using model:  \033[1;32m {model} \033[0m")
-    llm_response = LLMFactory.query_llm(server=LLM.OLLAMA_LOCAL,
+    st = time.perf_counter()
+    llm_response = LLMFactory.query_llm(server=server,
                                  model=model, 
                                  system_prompt="You are a helpful assistant", 
                                  temp=0.0, user_prompt=prompt)
-    #print(llm_response)    
+    et = time.perf_counter()
+    print(f"LLM response time: {et - st:0.2f} seconds")    
+    #print(llm_response)
     parsed_recs = PromptFactory.tryparse_llm(llm_response)   
     print(f"parsed {len(parsed_recs)} records")
     print(parsed_recs)    
@@ -657,6 +671,11 @@ def test_sample_profile_get_similar_orders():
     for rec in parsed_recs:
         sku = rec['sku']
         assert sku not in [product['sku'] for product in profile.cart], f"SKU {sku} should not be in cart"
+        this_product = next((p for p in products if p.sku == sku), None)
+        if this_product:
+            #assert this_product is not None, f"Product with SKU {first_sku} not found in products list."
+            #assert sku != viewing_product.sku, f"Recommended SKU {sku} should not be the same as viewing SKU {viewing_product.sku}"
+            print(f"Recommended: {this_product.name} \033[1;32m (SKU: {rec['sku']}) \033[0m - Reason: {rec['reason']}")
     
     analyze_recommendations_with_sequential(viewing_product.sku, [rec['sku'] for rec in parsed_recs])
     analyze_recommendations(viewing_product.sku, [rec['sku'] for rec in parsed_recs])

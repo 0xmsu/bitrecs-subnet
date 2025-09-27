@@ -16,34 +16,26 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-import math
 import json
 import hashlib
-import traceback
 import numpy as np
 import bittensor as bt
 import jsonschema
 import json_repair
 from typing import List
-from bitrecs.commerce.user_action import UserAction, ActionType
+from datetime import datetime, timezone
+from bitrecs.commerce.user_action import UserAction
 from bitrecs.protocol import BitrecsRequest
 from bitrecs.commerce.product import Product, ProductFactory
 from bitrecs.utils import constants as CONST
+from bitrecs.utils.reasoning import ReasonReport
 
-BASE_BOOST = 1/256
+
 BASE_REWARD = 0.80
-MAX_BOOST = 0.20
-
-CONSENSUS_BONUS_MULTIPLIER = 1.01
+CONSENSUS_BONUS_MULTIPLIER = 1.05
+REASONING_BONUS_MULTIPLIER = 1.025
 SUSPECT_MINER_DECAY = 0.980
-USE_DIFFICULTY_ADJUSTMENT = False
 
-
-ACTION_WEIGHTS = {
-    ActionType.VIEW_PRODUCT.value: 0.05,
-    ActionType.ADD_TO_CART.value: 0.10,
-    ActionType.PURCHASE.value: 0.85,
-}
 
 class CatalogValidator:
     def __init__(self, store_catalog: List[Product]):
@@ -98,7 +90,7 @@ def validate_result_schema(num_recs: int, results: list) -> bool:
 def verify_response_signature(response: BitrecsRequest) -> bool:
     try:
         if not response.miner_signature:
-            bt.logging.error("Response missing miner_signature for verification.")
+            bt.logging.error("Response missing miner_signature")
             return False
         payload = {
             "name": response.name,
@@ -123,57 +115,27 @@ def verify_response_signature(response: BitrecsRequest) -> bool:
         return False
 
 
-def calculate_miner_boost(hotkey: str, actions: List[UserAction]) -> float:
-    """
-    Reward miners who generate positive actions on ecommerce sites
-    DISABLED DURING BOOTSTRAPPING PHASE
-
-    """
-    try:
-        if not actions or len(actions) == 0:
-            return 0.0
-
-        miner_actions = [a for a in actions if a["hot_key"].lower() == hotkey.lower()]
-        if len(miner_actions) == 0:
-            bt.logging.trace(f"Miner {hotkey} has no actions")
-            return 0.0
-
-        views = [v for v in miner_actions if v["action"] == ActionType.VIEW_PRODUCT.name]
-        add_to_carts = [a for a in miner_actions if a["action"] == ActionType.ADD_TO_CART.name]
-        purchases = [p for p in miner_actions if p["action"] == ActionType.PURCHASE.name]        
-
-        if len(views) == 0 and len(add_to_carts) == 0 and len(purchases) == 0:
-            bt.logging.trace(f"Miner {hotkey} has no parsed actions - skipping boost")
-            return 0.0
-        
-        vf = ACTION_WEIGHTS[ActionType.VIEW_PRODUCT.value] * len(views)
-        af = ACTION_WEIGHTS[ActionType.ADD_TO_CART.value] * len(add_to_carts)
-        pf = ACTION_WEIGHTS[ActionType.PURCHASE.value] * len(purchases)
-        total_boost = vf + af + pf
-        bt.logging.trace(f"Miner {hotkey} total_boost: {total_boost} from views: ({len(views)}) add_to_carts: ({len(add_to_carts)}) purchases: ({len(purchases)})")
-
-        # miner has no actions this round
-        if total_boost == 0:
-            return 0.0
-        
-        #TODO review this       
-        if total_boost > BASE_BOOST:
-            total_boost = MAX_BOOST / (1 + math.exp(-total_boost + BASE_BOOST))
-        
-        return min(max(total_boost, 0.0), MAX_BOOST)
-    except Exception as e:
-        bt.logging.error(f"Error in calculate_miner_boost: {e}")
-        traceback.print_exc()
-        return 0.0
+def verify_time(response: BitrecsRequest) -> bool:
+    response_time = datetime.fromisoformat(response.created_at)
+    if response_time.tzinfo is None:
+        response_time = response_time.replace(tzinfo=timezone.utc)
+    utc_now = datetime.now(timezone.utc)
+    age = (utc_now - response_time).total_seconds()
+    if age <= 0 or age > 300:
+        bt.logging.error(f"Failed verify_time: {age} seconds for {response.axon.hotkey[:8]}")
+        return False
+    return True
 
 
-def reward(    
+def reward(
     validator_hotkey: str,
     ground_truth: BitrecsRequest,
     catalog_validator: CatalogValidator, 
     response: BitrecsRequest,
-    actions: List[UserAction],
-    r_limit: float = 1.0
+    reasoning_report: ReasonReport = None,
+    actions: List[UserAction] = None,
+    r_limit: float = 1.0,
+    max_f_score: float = 1.0
 ) -> float:
     """
     Score the Miner's response to the BitrecsRequest 
@@ -206,8 +168,11 @@ def reward(
         if not response.is_success:
             bt.logging.error(f"{response.axon.hotkey[:8]} is_success is False, status: {response.dendrite.status_code}")
             return 0.0
+        if not verify_time(response):
+            bt.logging.error(f"{response.axon.hotkey[:8]} response time verification failed")
+            return 0.0
         if not verify_response_signature(response):
-            bt.logging.error(f"{response.axon.hotkey[:8]} response signature verification failed")
+            bt.logging.error(f"{response.axon.hotkey[:8]} signature verification")
             return 0.0
         if not response.miner_uid or not response.miner_hotkey:
             bt.logging.error(f"{response.axon.hotkey[:8]} is not reporting correctly (missing ids)")
@@ -235,7 +200,7 @@ def reward(
             return 0.0
         if not validate_result_schema(ground_truth.num_results, response.results):
             bt.logging.error(f"{response.miner_uid} failed schema validation: {response.miner_hotkey[:8]}")
-            return 0.0
+            return 0.0      
         
         valid_items = set()
         query_lower = response.query.lower().strip()
@@ -251,7 +216,7 @@ def reward(
                     return 0.0
                 if not catalog_validator.validate_sku(sku):
                     bt.logging.error(f"{response.miner_uid} has invalid results: {response.miner_hotkey[:8]}")
-                    return 0.00
+                    return 0.0
                 
                 valid_items.add(sku)
             except Exception as e:
@@ -263,76 +228,101 @@ def reward(
             return 0.0
         
         score = BASE_REWARD
-        
-        # if CONST.CONVERSION_SCORING_ENABLED and 1==2: #Disabled during boostrapping phase of mainnet
-        #     # Adjust the rewards based on the actions
-        #     boost = calculate_miner_boost(response.miner_hotkey, actions)
-        #     if boost > 0:
-        #         bt.logging.trace(f"\033[32m Miner {response.miner_uid} boost: {boost} \033[0m")
-        #         bt.logging.trace(f"\033[32m current: {score} \033[0m")
-        #         score = score + boost
-        #         bt.logging.trace(f"\033[32m after: {score} \033[0m")
-        #     else:
-        #         bt.logging.trace(f"\033[33m Miner {response.miner_uid} boost: {boost} \033[0m")
-        
+
+        if CONST.REASONING_SCORING_ENABLED:
+            if not reasoning_report:
+                score = BASE_REWARD / 4
+                bt.logging.warning(f"\033[33m{response.miner_hotkey[:8]} no report score:{score}\033[0m")
+                return score
+            elif reasoning_report.f_score <= 0:
+                score = BASE_REWARD / 2
+                bt.logging.warning(f"\033[33m{response.miner_hotkey[:8]} no/low reasoning score:{score}\033[0m")                
+            else:
+                f_score = min(reasoning_report.f_score, max_f_score)
+                score = BASE_REWARD + f_score
+                score *= REASONING_BONUS_MULTIPLIER
+                bt.logging.trace(f"\033[32m{response.miner_hotkey[:8]} score:{score:.6f} f_score: {f_score:.6f} rank: {reasoning_report.rank}\033[0m")
+     
         return score
     except Exception as e:
         bt.logging.error(f"Error in rewards: {e}, miner data: {response}")
         return 0.0
 
 
+
 def get_rewards(
     validator_hotkey: str,
     ground_truth: BitrecsRequest,
     responses: List[BitrecsRequest],
-    actions: List[UserAction] = None,
+    reasoning_reports: List[ReasonReport] = None,
+    actions: List[UserAction] = None,    
     r_limit: float = 1.0,
-    batch_size: int = 16
+    batch_size: int = 16,
+    entity_threshold: float = 0.2
 ) -> np.ndarray:
     """
     Returns an array of rewards for the given query and responses.
-
-    Args:
-    - ground_truth (:obj:`bitrecs.protocol.BitrecsRequest`): The original request object containing the query and context.
-    - responses (List[:obj:`bitrecs.protocol.BitrecsRequest`]): The list of responses from miners.
-    - actions (List[:obj:`bitrecs.commerce.user_action.UserAction`]): The list of user actions for the query.
-    - r_limit (float): Min walltime for recs.
-    - batch_size (int): Neuron sample size of batch.
-
+    - validator_hotkey: The hotkey of the validator.
+    - ground_truth: The BitrecsRequest object containing the ground truth query
+    - responses: A list of BitrecsRequest objects containing the responses from miners.
+    - actions: A list of UserAction objects containing the actions performed by users.
+    - r_limit: The rlimit for responses.
+    - batch_size: The number of responses in this batch.
+    - entity_threshold: The threshold for considering nodes as entities.
     Returns:
-    - np.ndarray: An array of rewards for the given query and responses.
-    """
+    - np.ndarray: An array of rewards for each response.
     
+    """
+
     if ground_truth.num_results < CONST.MIN_RECS_PER_REQUEST or ground_truth.num_results > CONST.MAX_RECS_PER_REQUEST:
         bt.logging.error(f"Invalid number of recommendations: {ground_truth.num_results}")
         raise ValueError(f"Invalid number of recommendations: {ground_truth.num_results}")
-        #return np.zeros(len(responses), dtype=float)
-    
-    store_catalog : list[Product] = ProductFactory.try_parse_context_strict(ground_truth.context)
+
+    store_catalog: list[Product] = ProductFactory.try_parse_context_strict(ground_truth.context)
     if len(store_catalog) < CONST.MIN_CATALOG_SIZE or len(store_catalog) > CONST.MAX_CATALOG_SIZE:
         bt.logging.error(f"Invalid catalog size: {len(store_catalog)}")
         raise ValueError(f"Invalid catalog size: {len(store_catalog)}")
-        #return np.zeros(len(responses), dtype=float)
     catalog_validator = CatalogValidator(store_catalog)
-    
+
+    if not reasoning_reports or len(reasoning_reports) == 0:
+        bt.logging.warning(f"\033[1;33m WARNING - no reasoning_reports found in get_rewards \033[0m")
+
     if not actions or len(actions) == 0:
         bt.logging.warning(f"\033[1;33m WARNING - no actions found in get_rewards \033[0m")
-    
+
     axon_times = []
     for response in responses:
         axon_time = response.axon.process_time if response.axon and response.axon.process_time else None
         axon_times.append(axon_time)
-    
-    valid_times = [t for t in axon_times if t is not None and t > 0]    
+
+    valid_times = [t for t in axon_times if t is not None and t > 0]
     if len(valid_times) > 1:
         min_time = min(valid_times)
         max_time = max(valid_times)
         avg_time = sum(valid_times) / len(valid_times)
         spread = max_time - min_time
         bt.logging.trace(f"Batch: min={min_time:.4f}s, max={max_time:.4f}s, avg={avg_time:.4f}s, spread={spread:.4f}s")
-        if spread > 2.0:            
+        if spread > 2.0:
             bt.logging.info(f"\033[33mWide Spread detected: {spread:.4f}s\033[0m")
+
+    ip_counts = {}
+    for response in responses:
+        ip = response.axon.ip
+        ip_counts[ip] = ip_counts.get(ip, 0) + 1
+
+    max_ip_count = max(ip_counts.values()) if ip_counts else 0
+    max_ip_percent = max_ip_count / len(responses) if responses else 0
     
+    bt.logging.trace("----------------|----|----------")
+    for ip, count in sorted(ip_counts.items(), key=lambda x: -x[1]):
+        this_hk = [r.axon.hotkey for r in responses if r.axon.ip == ip][0]
+        bt.logging.trace(f"{ip:<15} | {count}  | {this_hk[:8]}")
+
+    entity_ips = set()
+    if max_ip_percent >= entity_threshold:
+        entity_ips = {ip for ip, count in ip_counts.items() if count / len(responses) >= entity_threshold}
+        bt.logging.warning(f"Entity threshold > \033[33m{max_ip_percent:.2%}\033[0m from {entity_ips}")
+
     difficulty_decay = measure_request_difficulty(
         sku=ground_truth.query,
         catalog_size=len(store_catalog),
@@ -351,21 +341,30 @@ def get_rewards(
 
     difficulty_statement = get_difficulty_statement(difficulty_decay)
     bt.logging.trace(f"{difficulty_statement}")
-    if not USE_DIFFICULTY_ADJUSTMENT:
-        bt.logging.trace(f"\033[33mDifficulty adjustment skipped! \033[0m")
+    if not CONST.DIFFICULTY_SCORING_ENABLED:
+        bt.logging.trace(f"\033[33mDifficulty adjustment skipped!\033[0m")
+    
+    if CONST.REASONING_SCORING_ENABLED:
+        bt.logging.trace(f"\033[32mReasoning scoring is enabled\033[0m")
 
     rewards = []
-    for i, response in enumerate(responses):        
-        base_reward = reward(validator_hotkey, ground_truth, catalog_validator, response, actions, r_limit)        
-        if base_reward <= 0.0:
+    for i, response in enumerate(responses):
+        if response.axon.ip in entity_ips and not CONST.REWARD_ENTITIES:
             rewards.append(0.0)
             continue
-        if USE_DIFFICULTY_ADJUSTMENT:
-            final_score = base_reward * difficulty_decay
+        
+        r_report = get_reasoning_report(response, reasoning_reports)
+        max_f_score = max((r.f_score for r in reasoning_reports), default=1.0)
+        miner_reward = reward(validator_hotkey, ground_truth, catalog_validator, response, r_report, actions, r_limit, max_f_score)
+        if miner_reward <= 0.0:
+            rewards.append(0.0)
+            continue
+        if CONST.DIFFICULTY_SCORING_ENABLED:
+            final_score = miner_reward * difficulty_decay
         else:
-            final_score = base_reward
+            final_score = miner_reward
         rewards.append(final_score)
-    
+
     return np.array(rewards, dtype=float)
 
 
@@ -420,3 +419,15 @@ def get_difficulty_statement(difficulty: float) -> str:
         return f"Difficulty is medium: \033[1;33m{difficulty:.3f}\033[0m"
     else:
         return f"Difficulty is hard: \033[1;31m{difficulty:.3f}\033[0m"
+    
+def get_reasoning_report(
+    response: BitrecsRequest,
+    reasoning_reports: List[ReasonReport] = None
+) -> ReasonReport | None:
+    if not reasoning_reports or len(reasoning_reports) == 0:
+        return None
+    reasoning_report = next(
+        (r for r in reasoning_reports if r.miner_hotkey.lower().strip() == response.axon.hotkey.lower().strip()),
+        None
+    )
+    return reasoning_report
