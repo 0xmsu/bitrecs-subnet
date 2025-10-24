@@ -171,6 +171,12 @@ def add_miner_args(cls, parser):
         help="Which LLM model to use",
     )
 
+    parser.add_argument(
+        "--verified.inference",
+        action="store_true",
+        help="If set miners will use verified inference",
+        default=False,
+    )
 
 
 def add_validator_args(cls, parser):
@@ -215,7 +221,7 @@ def add_validator_args(cls, parser):
         "--neuron.moving_average_alpha",
         type=float,
         help="Moving average alpha parameter, how much to add of the new observation.",
-        default=0.3,
+        default=0.1,
     )
 
     parser.add_argument(

@@ -1,60 +1,58 @@
 import time
 import requests
 import bittensor as bt
+from openai import OpenAI
 from bitrecs.llms.llm_provider import LLM
-from bitrecs.protocol import MinerResponse, SignedResponse
 from bitrecs.llms.verified_utils import sign_verified_request
 from bitrecs.utils import constants as CONST
+from bitrecs.protocol import MinerResponse, SignedResponse
 
-
-class Chutes:
+class Grok:
     def __init__(self, 
-                 key, 
-                 model="deepseek-ai/DeepSeek-V3", 
-                 system_prompt="You are a helpful assistant.", 
-                 temp=0.0,
+                key, 
+                model="grok-4-fast-non-reasoning", 
+                system_prompt="You are a helpful assistant.", 
+                temp=0.0,                
                 use_verified_inference: bool = False,
                 miner_wallet: "bt.Wallet" = None):
         
-        self.CHUTES_API_KEY = key
-        if not self.CHUTES_API_KEY:
-            raise ValueError("CHUTES_API_KEY is not set")
+        self.GROK_API_KEY = key
+        if not self.GROK_API_KEY:
+            raise ValueError("GROK_API_KEY is not set")
         self.model = model
         self.system_prompt = system_prompt
-        self.temp = temp
-        self.use_verified_inference = use_verified_inference
+        self.temp = temp        
         self.miner_wallet = miner_wallet
-        self.provider = LLM.CHUTES.name
-                
+        self.use_verified_inference = use_verified_inference
+        self.provider = LLM.GROK.name
+        
 
-
-    def call_chutes(self, prompt) -> str:
+    def call_grok(self, prompt) -> str:
         if not prompt or len(prompt) < 10:
             raise ValueError()
-        url = "https://llm.chutes.ai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.CHUTES_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": self.model,
-            "messages": [
+
+        client = OpenAI(api_key=self.GROK_API_KEY,
+                        base_url="https://api.x.ai/v1/")
+
+        completion = client.chat.completions.create(
+            extra_headers={
+                "HTTP-Referer": "https://bitrecs.ai",
+                "X-Title": "bitrecs"
+            }, 
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            "stream": False,
-            "max_tokens": 2048,
-            "temperature": self.temp
-        }
-        response = requests.post(url, headers=headers, json=data)
-        result = response.json()
-        #print(result)
-        thing = result["choices"][0]["message"]["content"]
+            temperature=self.temp,
+            max_tokens=2048
+        )
+        thing = completion.choices[0].message.content                
         return thing
     
-
-
-    def call_chutes_verified(self, prompt) -> MinerResponse:
-        """Verified Chutes Implementation"""
+    
+    def call_grok_verified(self, prompt) -> MinerResponse:
+        """Verified Grok Implementation"""
         if not prompt or len(prompt) < 10:
             raise ValueError()
         if not self.use_verified_inference:
@@ -63,7 +61,7 @@ class Chutes:
             raise ValueError("miner_wallet is not set for verified inference")
         
         headers = {
-            "Authorization": f"Bearer {self.CHUTES_API_KEY}",
+            "Authorization": f"Bearer {self.GROK_API_KEY}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://bitrecs.ai",
             "X-Title": "bitrecs",
@@ -112,6 +110,3 @@ class Chutes:
             )                    
         )
         return miner_response
-    
-    
-

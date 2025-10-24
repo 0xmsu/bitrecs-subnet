@@ -16,8 +16,10 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+import base64
 import json
 import hashlib
+import traceback
 import numpy as np
 import bittensor as bt
 import jsonschema
@@ -25,16 +27,19 @@ import json_repair
 from typing import List
 from datetime import datetime, timezone
 from bitrecs.commerce.user_action import UserAction
-from bitrecs.protocol import BitrecsRequest
+from bitrecs.protocol import BitrecsRequest, SignedResponse
 from bitrecs.commerce.product import Product, ProductFactory
 from bitrecs.utils import constants as CONST
 from bitrecs.utils.reasoning import ReasonReport
-
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.exceptions import InvalidSignature
 
 BASE_REWARD = 0.80
 CONSENSUS_BONUS_MULTIPLIER = 1.05
 REASONING_BONUS_MULTIPLIER = 1.025
+VERFIED_BONUS_MULTIPLIER = 1.15
 SUSPECT_MINER_DECAY = 0.980
+PERMITTED_CLOCK_DIFF_SECONDS = 300
 
 
 class CatalogValidator:
@@ -87,7 +92,7 @@ def validate_result_schema(num_recs: int, results: list) -> bool:
     return count == len(results)
 
 
-def verify_response_signature(response: BitrecsRequest) -> bool:
+def verify_miner_signature(response: BitrecsRequest) -> bool:
     try:
         if not response.miner_signature:
             bt.logging.error("Response missing miner_signature")
@@ -104,6 +109,7 @@ def verify_response_signature(response: BitrecsRequest) -> bool:
             "models_used": response.models_used,
             "miner_uid": response.miner_uid,
             "miner_hotkey": response.miner_hotkey,
+            "verified_proof": response.verified_proof
         }
         payload_str = json.dumps(payload, sort_keys=True)
         payload_hash = hashlib.sha256(payload_str.encode("utf-8")).digest()
@@ -121,10 +127,48 @@ def verify_time(response: BitrecsRequest) -> bool:
         response_time = response_time.replace(tzinfo=timezone.utc)
     utc_now = datetime.now(timezone.utc)
     age = (utc_now - response_time).total_seconds()
-    if age <= 0 or age > 300:
+    if age <= 0 or age > PERMITTED_CLOCK_DIFF_SECONDS:
         bt.logging.error(f"Failed verify_time: {age} seconds for {response.axon.hotkey[:8]}")
         return False
     return True
+
+
+def verify_proof(
+    response: SignedResponse,
+    public_key: Ed25519PublicKey
+) -> bool:
+    proof = response.proof
+    signature_b64 = response.signature
+    timestamp = response.timestamp
+    ttl = response.ttl
+    try:
+        current_time = datetime.now(timezone.utc)
+        proof_time = datetime.fromisoformat(timestamp)
+        ttl_time = datetime.fromisoformat(ttl)
+        time_diff = abs((current_time - proof_time).total_seconds())
+        if time_diff > PERMITTED_CLOCK_DIFF_SECONDS:
+            bt.logging.error(f"Timestamp too old or future: {time_diff} seconds")
+            return False
+        if current_time > ttl_time:
+            bt.logging.error(f"Proof expired: TTL {ttl_time}, current {current_time}")
+            return False
+        signed_data = {
+            "proof": proof,
+            "timestamp": timestamp,
+            "ttl": ttl
+        }
+        serialized_data = json.dumps(signed_data, sort_keys=True).encode()
+        signature_bytes = base64.b64decode(signature_b64)
+        public_key.verify(signature_bytes, serialized_data)
+        return True
+    except InvalidSignature:
+        bt.logging.error("verify_proof Verification failed: Invalid signature")
+        return False
+    except Exception as e:
+        bt.logging.error(f"verify_proof Verification failed: {type(e).__name__}: {str(e) or 'No message'}")
+        tb = traceback.print_exc()
+        bt.logging.error(f"Traceback:\n{tb}")
+        return False    
 
 
 def reward(
@@ -135,7 +179,8 @@ def reward(
     reasoning_report: ReasonReport = None,
     actions: List[UserAction] = None,
     r_limit: float = 1.0,
-    max_f_score: float = 1.0
+    max_f_score: float = 1.0,
+    verified_public_key: Ed25519PublicKey = None
 ) -> float:
     """
     Score the Miner's response to the BitrecsRequest 
@@ -144,7 +189,8 @@ def reward(
     Recommendations must exist in the original catalog
     Unique recommendations in the response is expected
     Malformed JSON or invliad skus will result in a 0.0 reward
-    Miner rewards are boosted based on end-user actions on the ecommerce sites to encourage positive recs
+    Miner rewards are boosted based on reasoning quality if enabled
+    Miner rewards are boosted by verified inference if enabled and proven
 
     Returns:
     - float: The reward value for the miner.
@@ -171,8 +217,8 @@ def reward(
         if not verify_time(response):
             bt.logging.error(f"{response.axon.hotkey[:8]} response time verification failed")
             return 0.0
-        if not verify_response_signature(response):
-            bt.logging.error(f"{response.axon.hotkey[:8]} signature verification")
+        if not verify_miner_signature(response):
+            bt.logging.error(f"{response.axon.hotkey[:8]} signature verification failed")
             return 0.0
         if not response.miner_uid or not response.miner_hotkey:
             bt.logging.error(f"{response.axon.hotkey[:8]} is not reporting correctly (missing ids)")
@@ -200,8 +246,8 @@ def reward(
             return 0.0
         if not validate_result_schema(ground_truth.num_results, response.results):
             bt.logging.error(f"{response.miner_uid} failed schema validation: {response.miner_hotkey[:8]}")
-            return 0.0      
-        
+            return 0.0        
+     
         valid_items = set()
         query_lower = response.query.lower().strip()
         for result in response.results:
@@ -215,7 +261,7 @@ def reward(
                     bt.logging.error(f"{response.miner_uid} has duplicate results: {response.miner_hotkey[:8]}")
                     return 0.0
                 if not catalog_validator.validate_sku(sku):
-                    bt.logging.error(f"{response.miner_uid} has invalid results: {response.miner_hotkey[:8]}")
+                    bt.logging.error(f"{response.miner_uid} has skus not in the catalog: {response.miner_hotkey[:8]}")
                     return 0.0
                 
                 valid_items.add(sku)
@@ -233,16 +279,25 @@ def reward(
             if not reasoning_report:
                 score = BASE_REWARD / 4
                 bt.logging.warning(f"\033[33m{response.miner_hotkey[:8]} no report score:{score}\033[0m")
-                return score
             elif reasoning_report.f_score <= 0:
                 score = BASE_REWARD / 2
-                bt.logging.warning(f"\033[33m{response.miner_hotkey[:8]} no/low reasoning score:{score}\033[0m")                
+                bt.logging.warning(f"\033[33m{response.miner_hotkey[:8]} no/low reasoning score:{score}\033[0m")
             else:
                 f_score = min(reasoning_report.f_score, max_f_score)
                 score = BASE_REWARD + f_score
                 score *= REASONING_BONUS_MULTIPLIER
                 bt.logging.trace(f"\033[32m{response.miner_hotkey[:8]} score:{score:.6f} f_score: {f_score:.6f} rank: {reasoning_report.rank}\033[0m")
-     
+
+        if response.verified_proof and verified_public_key:
+            signed_response = SignedResponse(**response.verified_proof)
+            verified = verify_proof(signed_response, verified_public_key)
+            if not verified:
+                score = 0.0
+                bt.logging.error(f"{response.axon.hotkey[:8]} Verified Inference Failed: {response.miner_uid}")
+            else:
+                score *= VERFIED_BONUS_MULTIPLIER
+                bt.logging.trace(f"\033[32m{response.axon.hotkey[:8]} Verified Inference Success: {response.miner_uid}\033[0m")
+
         return score
     except Exception as e:
         bt.logging.error(f"Error in rewards: {e}, miner data: {response}")
@@ -258,7 +313,8 @@ def get_rewards(
     actions: List[UserAction] = None,    
     r_limit: float = 1.0,
     batch_size: int = 16,
-    entity_threshold: float = 0.2
+    entity_threshold: float = 0.2,
+    verified_public_key: Ed25519PublicKey = None
 ) -> np.ndarray:
     """
     Returns an array of rewards for the given query and responses.
@@ -269,6 +325,7 @@ def get_rewards(
     - r_limit: The rlimit for responses.
     - batch_size: The number of responses in this batch.
     - entity_threshold: The threshold for considering nodes as entities.
+    - verified_public_key: The public key used to verify proofs of inference.
     Returns:
     - np.ndarray: An array of rewards for each response.
     
@@ -355,7 +412,7 @@ def get_rewards(
         
         r_report = get_reasoning_report(response, reasoning_reports)
         max_f_score = max((r.f_score for r in reasoning_reports), default=1.0)
-        miner_reward = reward(validator_hotkey, ground_truth, catalog_validator, response, r_report, actions, r_limit, max_f_score)
+        miner_reward = reward(validator_hotkey, ground_truth, catalog_validator, response, r_report, actions, r_limit, max_f_score, verified_public_key)
         if miner_reward <= 0.0:
             rewards.append(0.0)
             continue

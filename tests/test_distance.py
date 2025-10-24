@@ -17,7 +17,8 @@ from bitrecs.protocol import BitrecsRequest
 from dataclasses import asdict
 from typing import List, Optional, Set
 from bitrecs.commerce.product import CatalogProvider, Product, ProductFactory
-from bitrecs.llms.factory import LLM, LLMFactory
+from bitrecs.llms.factory import LLMFactory
+from bitrecs.llms.llm_provider import LLM
 from bitrecs.llms.prompt_factory import PromptFactory
 from bitrecs.validator.reward import validate_result_schema
 from bitrecs.utils.misc import ttl_cache
@@ -434,8 +435,8 @@ def test_local_llm_bitrecs_mock_ok():
 
 def test_local_llm_base_config_jaccard():
     config = TestConfig()    
-    #products = product_1k()
-    products = product_5k()
+    products = product_1k()
+    #products = product_5k()
     products = ProductFactory.dedupe(products)
     product = safe_random.choice(products)
     product_name = product_name_by_sku_trimmed(product.sku, 500)

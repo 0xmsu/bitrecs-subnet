@@ -1,3 +1,4 @@
+import os
 import re
 import bitrecs
 import datetime
@@ -31,7 +32,12 @@ Constants:
     CONVERSION_SCORING_ENABLED (bool): Flag to enable conversion scoring.
     DIFFICULTY_SCORING_ENABLED (bool): Flag to enable difficulty scoring.
     REASONING_SCORING_ENABLED (bool): Flag to enable reasoning scoring.
+    MIN_UNIQUE_ENTITIES_FOR_BATCH (int): Minimum unique entities for batch processing.
+    FRACTION_UNIQUE_ENTITIES_FOR_BATCH (float): Fraction of unique entities for batch processing.
+    MIN_UNIQUE_MODELS_FOR_BATCH (int): Minimum unique models for batch processing.
+    FRACTION_UNIQUE_MODELS_FOR_BATCH (float): Fraction of unique models for batch processing
     QUERY_BATCH_SIZE (int): Size of query batches.
+    QUERY_TOP_N (int): Number of top scores to consider for selection.
     MIN_QUERY_BATCH_SIZE (int): Minimum size of query batches.
     SCORE_DISPLAY_ENABLED (bool): Flag to enable score display.
     SCORE_DISPLAY_INTERVAL (int): Interval for score display.
@@ -40,26 +46,30 @@ Constants:
     EMISSION_CONTROL_ENABLED (bool): Flag to enable emission control.  
     EMISSION_CONTROL_RATE (float): Rate for emission control adjustments.
     EMISSION_CONTROL_TARGET_UID (int): Target UID for emission control.
+    VERIFIED_INFERENCE_URL (str): URL for verified inference service.
+    TRUNCATE_LOGS_ENABLED (bool): Flag to enable log truncation.
+    TRUNCATE_LOGS_DB_DAYS (int): Number of days to retain log database entries
 
 """
 
 ROOT_DIR = Path(bitrecs.__file__).parent.parent
-SCHEMA_UPDATE_CUTOFF = datetime(2025, 9, 30, tzinfo=timezone.utc)
+SCHEMA_UPDATE_CUTOFF = datetime(2025, 10, 29, tzinfo=timezone.utc)
 EPOCH_TEMPO = 360
 TEMPO_SYNC_INTERVAL = 180
-MAX_DENDRITE_TIMEOUT = 7
+MAX_DENDRITE_TIMEOUT = 8 if os.environ.get("NETWORK", "") == "mainnet" else 10
 MIN_QUERY_LENGTH = 3
 MAX_QUERY_LENGTH = 40
 MIN_RECS_PER_REQUEST = 1
 MAX_RECS_PER_REQUEST = 20
 MAX_CONTEXT_TEXT_LENGTH = 1_000_000
-MAX_CONTEXT_TOKEN_COUNT = 600_000
+MAX_CONTEXT_TOKEN_COUNT = 800_000
 MIN_CATALOG_SIZE = 6
 MAX_CATALOG_SIZE = 100_000
 ACTION_SYNC_INTERVAL = 14400
 VERSION_CHECK_INTERVAL = 1200
 COOLDOWN_SYNC_INTERVAL = 900
 REASONING_SYNC_INTERVAL = 1800
+VERFIED_KEY_SYNC_INTERVAL = 600
 R2_SYNC_INTERVAL = 3600
 CATALOG_DUPE_THRESHOLD = 0.05
 RE_PRODUCT_NAME = re.compile(r"[^A-Za-z0-9 |-]")
@@ -68,12 +78,20 @@ RE_MODEL_NAME = re.compile(r"[^A-Za-z0-9._/: +-]")
 CONVERSION_SCORING_ENABLED = False
 DIFFICULTY_SCORING_ENABLED = False
 REASONING_SCORING_ENABLED = True
+MIN_UNIQUE_ENTITIES_FOR_BATCH = 2
+FRACTION_UNIQUE_ENTITIES_FOR_BATCH = 0.67
+MIN_UNIQUE_MODELS_FOR_BATCH = 2
+FRACTION_UNIQUE_MODELS_FOR_BATCH = 0.50
 QUERY_BATCH_SIZE = 14
+QUERY_TOP_N = 8
 MIN_QUERY_BATCH_SIZE = 3
 SCORE_DISPLAY_ENABLED = True
-SCORE_DISPLAY_INTERVAL = 600
+SCORE_DISPLAY_INTERVAL = 900
 BATCH_ENTITY_THRESHOLD = 0.20
 REWARD_ENTITIES = True
 EMISSION_CONTROL_ENABLED = True
-EMISSION_CONTROL_RATE = 0.95
+EMISSION_CONTROL_RATE = 0.80
 EMISSION_CONTROL_TARGET_UID = 0
+VERIFIED_INFERENCE_URL = "https://verified.bitrecs.ai" if os.environ.get("NETWORK", "") == "mainnet" else "https://testnet.verified.bitrecs.ai"
+TRUNCATE_LOGS_ENABLED = True
+TRUNCATE_LOGS_DB_DAYS = 60

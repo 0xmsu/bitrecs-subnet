@@ -16,9 +16,11 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-
 import pydantic
 import bittensor as bt
+from pydantic import BaseModel
+from typing import Dict, Optional, Union
+
 
 class BitrecsRequest(bt.Synapse):
     created_at: str | None
@@ -38,6 +40,10 @@ class BitrecsRequest(bt.Synapse):
         None,
         description="Signature of the miner's hotkey over the payload",
     )
+    verified_proof: dict | None = pydantic.Field(
+        None,
+        description="Proof of verified inference (if applicable)",
+    )
     
 
     def to_dict(self) -> dict:
@@ -53,4 +59,18 @@ class BitrecsRequest(bt.Synapse):
             'miner_uid': self.miner_uid,
             'miner_hotkey': self.miner_hotkey,
             'miner_signature': self.miner_signature,
+            'verified_proof': str(self.verified_proof) if self.verified_proof else None
         }
+    
+
+class SignedResponse(BaseModel):
+    response: dict
+    proof: dict
+    signature: str
+    timestamp: str
+    ttl: str
+
+
+class MinerResponse(BaseModel):
+    results: str
+    signed_response: Optional[Union[Dict, SignedResponse]] = None
