@@ -157,7 +157,12 @@ def truncate_miner_log_db(since_date: datetime) -> int:
         return 0
 
 
-def log_miner_responses_to_sql(step: int, responses: List[BitrecsRequest], rewards: np.ndarray, elected: BitrecsRequest) -> None:
+
+def log_miner_responses_to_sql(step: int, 
+                                responses: List[BitrecsRequest], 
+                                rewards: np.ndarray = None, 
+                                reward_notes: List[str] = None, 
+                                elected: BitrecsRequest = None) -> None:
     try:        
         if TRUNCATE_LOGS_ENABLED:
             deleted = truncate_miner_log_db(datetime.now(timezone.utc) - pd.Timedelta(days=TRUNCATE_LOGS_DB_DAYS))
@@ -178,6 +183,10 @@ def log_miner_responses_to_sql(step: int, responses: List[BitrecsRequest], rewar
                 df['reward'] = rewards[responses.index(response)] if responses.index(response) < len(rewards) else 0.0
             else:
                 df['reward'] = 0.0
+            if reward_notes is not None and len(reward_notes) > 0:
+                df['reward_note'] = reward_notes[responses.index(response)] if responses.index(response) < len(reward_notes) else ""
+            else:
+                df['reward_note'] = ""
             frames.append(df)
         final = pd.concat(frames)
 
