@@ -151,17 +151,17 @@ def validate_proof_skus(valid_skus: set, signed_response: SignedResponse) -> boo
     except Exception as e:
         bt.logging.error(f"Error in validate_proof_skus: {e}")
         return False
-    
+
 
 def verify_proof_with_recs(
     recs: set,
-    response: SignedResponse,
+    signed_response: SignedResponse,
     public_key: Ed25519PublicKey
 ) -> bool:
-    proof = response.proof
-    signature_b64 = response.signature
-    timestamp = response.timestamp
-    ttl = response.ttl
+    proof = signed_response.proof
+    signature_b64 = signed_response.signature
+    timestamp = signed_response.timestamp
+    ttl = signed_response.ttl
     try:
         current_time = datetime.now(timezone.utc)
         proof_time = datetime.fromisoformat(timestamp)
@@ -173,9 +173,14 @@ def verify_proof_with_recs(
         if current_time > ttl_time:
             bt.logging.error(f"Proof expired: TTL {ttl_time}, current {current_time}")
             return False
-        validate_recs = validate_proof_skus(recs, response)
+        validate_recs = validate_proof_skus(recs, signed_response)
         if not validate_recs:
             bt.logging.error("SKU proof validation failed")
+            return False
+        response_json = json.dumps(signed_response.response, sort_keys=True).encode()
+        response_hash = hashlib.sha256(response_json).hexdigest()
+        if response_hash != proof["response_hash"]:
+            bt.logging.error("Response hash mismatch")
             return False
 
         signed_data = {
