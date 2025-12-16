@@ -1,5 +1,4 @@
 import os
-import re
 os.environ["NEST_ASYNCIO"] = "0"
 import json
 import json_repair
@@ -80,9 +79,9 @@ def test_schema_validation():
             thing = json_repair.loads(item)
             jsonschema.validate(thing, schema)
             broken_count += 1
-        except json.decoder.JSONDecodeError as e:            
+        except json.decoder.JSONDecodeError:            
             continue
-        except jsonschema.exceptions.ValidationError as e:            
+        except jsonschema.exceptions.ValidationError:
             continue
     #print(broken_count)
     assert broken_count == 0
@@ -93,9 +92,9 @@ def test_schema_validation():
             thing = json_repair.loads(item)
             jsonschema.validate(thing, schema)
             partial_count += 1
-        except json.decoder.JSONDecodeError as e:            
+        except json.decoder.JSONDecodeError:            
             continue
-        except jsonschema.exceptions.ValidationError as e:            
+        except jsonschema.exceptions.ValidationError:
             continue
     
     assert partial_count == 1
@@ -107,9 +106,9 @@ def test_schema_validation():
             thing = json_repair.loads(item)
             jsonschema.validate(thing, schema)
             good_count += 1
-        except json.decoder.JSONDecodeError as e:            
+        except json.decoder.JSONDecodeError:
             continue
-        except jsonschema.exceptions.ValidationError as e:            
+        except jsonschema.exceptions.ValidationError:            
             continue
 
     assert good_count == len(good_json)
@@ -363,7 +362,7 @@ def test_products_must_all_have_sku():
 
     sku_check = ProductFactory.check_all_have_sku(products)
     print(f"sku check: {sku_check}")
-    assert sku_check == True
+    assert sku_check is True
 
 
 def test_products_must_all_have_sku_case_sensitive():
@@ -375,7 +374,7 @@ def test_products_must_all_have_sku_case_sensitive():
 
     sku_check = ProductFactory.check_all_have_sku(products)
     print(f"sku check: {sku_check}")
-    assert sku_check == False
+    assert sku_check is False
     
     
 def test_products_must_all_have_sku_no_upper_allowed():
@@ -387,7 +386,7 @@ def test_products_must_all_have_sku_no_upper_allowed():
 
     sku_check = ProductFactory.check_all_have_sku(products)
     print(f"sku check: {sku_check}")
-    assert sku_check == False   
+    assert sku_check is False   
     
 
 def test_products_missing_sku_error():
@@ -399,7 +398,7 @@ def test_products_missing_sku_error():
 
     sku_check = ProductFactory.check_all_have_sku(products)
     print(f"sku check: {sku_check}")
-    assert sku_check == False
+    assert sku_check is False
 
 
 
@@ -412,7 +411,7 @@ def test_schema_validation_broken_testnet_json_03_03_2025():
     '{\'sku\': \'8761139331296\', \'name\': \'Impress 16" Oscillating Stand Fan (black) IM-725B\', \'price\': \'56.91\', \'reason\': \'test\'}']
 
     is_valid = validate_result_schema(6, broken_json)
-    assert is_valid == True
+    assert is_valid is True
  
 
 def test_schema_validation_broken_testnet_json_03_03_2025_2():
@@ -472,30 +471,10 @@ def test_schema_validation_missing_reasoning():
     "{'sku': '8761138839776', 'name': 'beFree Sound Color LED Dual Gaming Speakers', 'price': '84.42', 'reason': 'test'}", 
     "{'sku': '8772908384480', 'name': 'Universal Wireless Charging Stand for Iphone Apple Watch Airpods', 'price': '40.33'}"]
     is_valid = validate_result_schema(4, broken_json)
-    assert is_valid == False
+    assert is_valid is False
 
 
-def test_compact_product_json():   
-    with open("./tests/data/amazon/fashion/amazon_fashion_sample_1000.json", "r") as f:
-        data = f.read()    
-    products = ProductFactory.convert(data, CatalogProvider.AMAZON)    
-    
-    assert len(products) == 907
-    context = json.dumps([asdict(products) for products in products])    
-    tc = PromptFactory.get_token_count(context)
-    print(f"token count: {tc}")
-    assert 40093 == tc
-
-    context = json.dumps([asdict(products) for products in products], separators=(',', ':'))    
-    tc = PromptFactory.get_token_count(context)
-    print(f"token count: {tc}")
-    assert 34652 == tc
-
-    p = json.loads(context)
-    assert len(p) == 907
-
-
-def test_compact_product_json():   
+def test_compact_product_json_1k():   
     with open("./tests/data/amazon/fashion/amazon_fashion_sample_1000.json", "r") as f:
         data = f.read()    
     products = ProductFactory.convert(data, CatalogProvider.AMAZON)    
@@ -545,11 +524,11 @@ def test_catalog_validator():
 
     sku = "B00006IEBU"
     is_valid = catalog_validator.validate_sku(sku)
-    assert is_valid == True
+    assert True is is_valid
 
     sku = "B00006IEBUe"
     is_valid = catalog_validator.validate_sku(sku)
-    assert is_valid == False
+    assert False is is_valid
     
 
 def test_find_name_by_sku():
@@ -681,3 +660,98 @@ def test_responses_parse_to_skus():
         total_skus += len(skus)
 
     assert total_skus == 16
+
+
+    
+def test_responses_parse_to_model_list():
+    responses = [
+        {
+            "id": "gen-1762174546-KTPAqRYyKnHjfyGjaXs8",
+            "provider": "Google AI Studio",
+            "model": "google/gemini-2.0-flash-001",
+            "object": "chat.completion",
+            "created": 1762174546,
+            "choices": [
+                {
+                    "logprobs": None,
+                    "finish_reason": "stop",
+                    "native_finish_reason": "STOP",
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "```json\n[\n  {\n    \"sku\": \"WS02\",\n    \"name\": \"Gabrielle Micro Sleeve Top - Clothing|New Luma Yoga Collection|Tees\",\n    \"price\": \"28\",\n    \"reason\": \"This top complements the parachute pants as part of the New Luma Yoga Collection\"\n  },\n  {\n    \"sku\": \"WH10\",\n    \"name\": \"Helena Hooded Fleece - Clothing|Hoodies amp Sweatshirts|New Luma Yoga Collection\",\n    \"price\": \"55\",\n    \"reason\": \"This hoodie provides warmth and style and is part of the New Luma Yoga Collection\"\n  },\n  {\n    \"sku\": \"WJ11\",\n    \"name\": \"Neve Studio Dance Jacket - Clothing|Jackets|New Luma Yoga Collection\",\n    \"price\": \"69\",\n    \"reason\": \"This jacket is a stylish layering piece from the New Luma Yoga Collection\"\n  },\n  {\n    \"sku\": \"MP03\",\n    \"name\": \"Geo Insulated Jogging Pant - Clothing|New Luma Yoga Collection|Pants\",\n    \"price\": \"51\",\n    \"reason\": \"These jogging pants offer warmth and comfort and are part of the New Luma Yoga Collection\"\n  },\n  {\n    \"sku\": \"MP05\",\n    \"name\": \"Kratos Gym Pant - Clothing|New Luma Yoga Collection|Pants\",\n    \"price\": \"57\",\n    \"reason\": \"These gym pants are a comfortable and stylish option from the New Luma Yoga Collection\"\n  },\n  {\n    \"sku\": \"MP07\",\n    \"name\": \"Thorpe Track Pant - Clothing|New Luma Yoga Collection|Pants\",\n    \"price\": \"68\",\n    \"reason\": \"These track pants are a versatile option from the New Luma Yoga Collection\"\n  },\n  {\n    \"sku\": \"MP08\",\n    \"name\": \"Zeppelin Yoga Pant - Clothing|New Luma Yoga Collection|Pants\",\n    \"price\": \"82\",\n    \"reason\": \"These yoga pants are a comfortable and stylish option from the New Luma Yoga Collection\"\n  },\n  {\n    \"sku\": \"WSH03\",\n    \"name\": \"Gwen Drawstring Bike Short - Clothing|New Luma Yoga Collection|Performance Fabrics|Shorts\",\n    \"price\": \"50\",\n    \"reason\": \"These bike shorts are a comfortable and stylish option from the New Luma Yoga Collection\"\n  }\n]\n```",
+                        "refusal": None
+                    }
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 6350,
+                "completion_tokens": 569,
+                "total_tokens": 6919,
+                "prompt_tokens_details": {"cached_tokens": 0},
+                "completion_tokens_details": {"reasoning_tokens": 0, "image_tokens": 0}
+            }
+        },
+        {
+            "id": "chatcmpl-CXoO4WZJeKccWAyTy97AgExo6cBLw",
+            "object": "chat.completion",
+            "created": 1762174548,
+            "model": "gpt-4o-mini-2024-07-18",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello! How can I assist you today?",
+                        "refusal": None,
+                        "annotations": []
+                    },
+                    "logprobs": None,
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 9,
+                "total_tokens": 17,
+                "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
+                "completion_tokens_details": {"reasoning_tokens": 0, "audio_tokens": 0, "accepted_prediction_tokens": 0, "rejected_prediction_tokens": 0}
+            },
+            "service_tier": "default",
+            "system_fingerprint": "fp_560af6e559"
+        },
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "index": 0,
+                    "message": {
+                        "content": "```json\n[\n  {\n    \"sku\": \"MP03\",\n    \"name\": \"Geo Insulated Jogging Pant - Clothing|New Luma Yoga Collection|Pants\",\n    \"price\": \"51\",\n    \"reason\": \"These jogging pants complement the shorts as part of the New Luma Yoga Collection providing a full outfit\"\n  },\n  {\n    \"sku\": \"MS09\",\n    \"name\": \"Ryker LumaTechtrade Tee Crew-neck - Tees\",\n    \"price\": \"32\",\n    \"reason\": \"This tee pairs well with the shorts for a complete athletic outfit\"\n  },\n  {\n    \"sku\": \"MT05\",\n    \"name\": \"Rocco Gym Tank - Tanks\",\n    \"price\": \"24\",\n    \"reason\": \"This tank top is a great option for workouts and complements the active shorts\"\n  },\n  {\n    \"sku\": \"24-MG03\",\n    \"name\": \"Summit Watch - New Luma Yoga Collection|Watches\",\n    \"price\": \"54\",\n    \"reason\": \"This watch from the New Luma Yoga Collection complements the shorts and enhances the athletic look\"\n  },\n  {\n    \"sku\": \"24-UG05\",\n    \"name\": \"Go-Getr Pushup Grips - Fitness Equipment|New Luma Yoga Collection\",\n    \"price\": \"19\",\n    \"reason\": \"These pushup grips enhance the workout experience when paired with the active shorts\"\n  },\n  {\n    \"sku\": \"MSH06\",\n    \"name\": \"Lono Yoga Short - Clothing|New Luma Yoga Collection|Shorts\",\n    \"price\": \"32\",\n    \"reason\": \"This yoga short is another option from the New Luma Yoga Collection providing a similar style\"\n  },\n  {\n    \"sku\": \"MP05\",\n    \"name\": \"Kratos Gym Pant - Clothing|New Luma Yoga Collection|Pants\",\n    \"price\": \"57\",\n    \"reason\": \"These gym pants from the New Luma Yoga Collection provide an alternative to shorts for cooler weather\"\n  },\n  {\n    \"sku\": \"24-MB05\",\n    \"name\": \"Wayfarer Messenger Bag - Bags|New Luma Yoga Collection\",\n    \"price\": \"45\",\n    \"reason\": \"This messenger bag from the New Luma Yoga Collection is great for carrying workout gear\"\n  }\n]\n```",
+                        "role": "assistant"
+                    }
+                }
+            ],
+            "created": 1762174634,
+            "id": "paYIac_XLdqr-8YP96e_2Ao",
+            "model": "gemini-2.0-flash-001",
+            "object": "chat.completion",
+            "usage": {
+                "completion_tokens": 558,
+                "prompt_tokens": 6353,
+                "total_tokens": 6911
+            }
+        }
+    ]
+
+    models = set()
+    for response in responses:
+        model_name = response["model"]
+        model_name = model_name.split('/')[-1] if '/' in model_name else model_name
+        print(f"model_name: {model_name}")
+        models.add(model_name)
+    
+    assert len(models) == 2
+    assert "gemini-2.0-flash-001" in models
+    assert "gpt-4o-mini-2024-07-18" in models
+
+    

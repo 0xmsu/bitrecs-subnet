@@ -16,17 +16,12 @@
 # DEALINGS IN THE SOFTWARE.
 
 import copy
-import typing
-
 import bittensor as bt
-
 from abc import ABC, abstractmethod
-
 # Sync calls set weights and also resyncs the metagraph.
 from bitrecs.utils.config import check_config, add_args, config
 from bitrecs.utils.misc import ttl_get_block
 from bitrecs import __spec_version__ as spec_version
-from bitrecs.mock import MockSubtensor, MockMetagraph
 
 
 class BaseNeuron(ABC):
@@ -50,9 +45,9 @@ class BaseNeuron(ABC):
     def config(cls):
         return config(cls)
 
-    subtensor: "bt.subtensor"
-    wallet: "bt.wallet"
-    metagraph: "bt.metagraph"
+    subtensor: "bt.Subtensor"
+    wallet: "bt.Wallet"
+    metagraph: "bt.Metagraph"
     spec_version: int = spec_version
 
     @property
@@ -78,8 +73,8 @@ class BaseNeuron(ABC):
         # These are core Bittensor classes to interact with the network.
         bt.logging.info("Setting up bittensor objects.")
               
-        self.wallet = bt.wallet(config=self.config)
-        self.subtensor = bt.subtensor(config=self.config)
+        self.wallet = bt.Wallet(config=self.config)
+        self.subtensor = bt.Subtensor(config=self.config)
         self.metagraph = self.subtensor.metagraph(self.config.netuid)
 
         bt.logging.info(f"Wallet: {self.wallet}")

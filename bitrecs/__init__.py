@@ -19,7 +19,7 @@
 
 
 
-__version__ = "0.8.8"
+__version__ = "0.8.9"
 version_split = __version__.split(".")
 __spec_version__ = (
     (1000 * int(version_split[0]))
@@ -28,8 +28,8 @@ __spec_version__ = (
 )
 
 # Import all submodules.
-from . import protocol
-from . import base
-from . import validator
-from . import api
-from .subnet_links import SUBNET_LINKS
+# from . import protocol
+# from . import base
+# from . import validator
+# from . import api
+# from .subnet_links import SUBNET_LINKS

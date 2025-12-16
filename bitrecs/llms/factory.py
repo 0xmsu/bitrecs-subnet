@@ -8,9 +8,11 @@ from bitrecs.llms.llama_local import OllamaLocal
 from bitrecs.llms.llm_provider import LLM
 from bitrecs.llms.open_router import OpenRouter
 from bitrecs.llms.chat_gpt import ChatGPT
+from bitrecs.llms.perplexity import Perplexity
 from bitrecs.llms.vllm_router import vLLM
 from bitrecs.llms.chutes import Chutes
 from bitrecs.llms.grok import Grok
+from bitrecs.llms.nvidia_inference import NvidiaInference
 from bitrecs.protocol import MinerResponse
 
 
@@ -41,7 +43,10 @@ class LLMFactory:
                 return CerebrasInterface(model, system_prompt, temp).query(user_prompt)
             case LLM.GROQ:
                 return GroqInterface(model, system_prompt, temp).query(user_prompt)
-                
+            case LLM.NVIDIA:
+                return NvidiaInterface(model, system_prompt, temp).query(user_prompt)
+            case LLM.PERPLEXITY:
+                return PerplexityInterface(model, system_prompt, temp).query(user_prompt)
             case _:
                 raise ValueError("Unknown LLM server")
             
@@ -73,6 +78,10 @@ class LLMFactory:
                 raise NotImplementedError("Cerebras is not implemented yet")
             case LLM.GROQ:
                 raise NotImplementedError("Groq is not implemented yet")
+            case LLM.NVIDIA:
+                return NvidiaInterface(model, system_prompt, temp, miner_wallet, use_verified_inference).query_verified(user_prompt)
+            case LLM.PERPLEXITY:
+                return PerplexityInterface(model, system_prompt, temp, miner_wallet, use_verified_inference).query_verified(user_prompt)
             case _:
                 raise ValueError("Unknown LLM server")
             
@@ -80,7 +89,7 @@ class LLMFactory:
             
     @staticmethod
     def try_parse_llm(value: str) -> LLM:
-        match value.upper():
+        match value.strip().upper():
             case "OLLAMA_LOCAL":
                 return LLM.OLLAMA_LOCAL
             case "OPEN_ROUTER":
@@ -100,7 +109,11 @@ class LLMFactory:
             case "CEREBRAS":
                 return LLM.CEREBRAS
             case "GROQ":
-                return LLM.GROQ                
+                return LLM.GROQ
+            case "NVIDIA":
+                return LLM.NVIDIA
+            case "PERPLEXITY":
+                return LLM.PERPLEXITY
             case _:
                 raise ValueError("Unknown LLM server")
         
@@ -318,3 +331,55 @@ class GroqInterface:
                          miner_wallet=self.miner_wallet, 
                          use_verified_inference=self.use_verified_inference)
         return router.call_groq(user_prompt)
+    
+
+class NvidiaInterface:
+    def __init__(self, model, system_prompt, temp, miner_wallet = None, use_verified_inference = False):
+        self.model = model
+        self.system_prompt = system_prompt
+        self.temp = temp
+        self.NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY")
+        if not self.NVIDIA_API_KEY:            
+            raise ValueError("NVIDIA_API_KEY is not set")
+        self.miner_wallet = miner_wallet
+        self.use_verified_inference = use_verified_inference
+        
+    def query(self, user_prompt) -> str:
+        router = NvidiaInference(self.NVIDIA_API_KEY, model=self.model, 
+                         system_prompt=self.system_prompt, temp=self.temp, 
+                         miner_wallet=self.miner_wallet, 
+                         use_verified_inference=self.use_verified_inference)
+        return router.call_nvidia(user_prompt)
+    
+    def query_verified(self, user_prompt) -> MinerResponse:
+        router = NvidiaInference(self.NVIDIA_API_KEY, model=self.model,
+                    system_prompt=self.system_prompt, temp=self.temp, 
+                    miner_wallet=self.miner_wallet, 
+                    use_verified_inference=self.use_verified_inference)
+        return router.call_nvidia_verified(user_prompt)
+
+
+class PerplexityInterface:
+    def __init__(self, model, system_prompt, temp, miner_wallet = None, use_verified_inference = False):
+        self.model = model
+        self.system_prompt = system_prompt
+        self.temp = temp
+        self.PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY")
+        if not self.PERPLEXITY_API_KEY:            
+            raise ValueError("PERPLEXITY_API_KEY is not set")
+        self.miner_wallet = miner_wallet
+        self.use_verified_inference = use_verified_inference
+        
+    def query(self, user_prompt) -> str:
+        router = Perplexity(self.PERPLEXITY_API_KEY, model=self.model, 
+                         system_prompt=self.system_prompt, temp=self.temp, 
+                         miner_wallet=self.miner_wallet, 
+                         use_verified_inference=self.use_verified_inference)
+        return router.call_perplexity(user_prompt)
+    
+    def query_verified(self, user_prompt) -> MinerResponse:
+        router = Perplexity(self.PERPLEXITY_API_KEY, model=self.model,
+                    system_prompt=self.system_prompt, temp=self.temp, 
+                    miner_wallet=self.miner_wallet, 
+                    use_verified_inference=self.use_verified_inference)
+        return router.call_perplexity_verified(user_prompt)

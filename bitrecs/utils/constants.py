@@ -1,7 +1,6 @@
 import os
 import re
 import bitrecs
-import datetime
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -24,6 +23,8 @@ Constants:
     VERSION_CHECK_INTERVAL (int): Interval for version checks.
     COOLDOWN_SYNC_INTERVAL (int): Interval for cooldown syncs.
     REASONING_SYNC_INTERVAL (int): Interval for reasoning syncs.
+    VERFIED_KEY_SYNC_INTERVAL (int): Interval for verified key syncs.
+    BACKUP_WEIGHT_SYNC_INTERVAL (int): Interval for backup weight syncs.
     CATALOG_DUPE_THRESHOLD (float): Threshold for duplicate catalog entries.
     R2_SYNC_INTERVAL (int): Interval for R2 syncs.
     RE_PRODUCT_NAME (Pattern): Regular expression for validating product names.
@@ -49,6 +50,7 @@ Constants:
     VERIFIED_INFERENCE_URL (str): URL for verified inference service.
     TRUNCATE_LOGS_ENABLED (bool): Flag to enable log truncation.
     TRUNCATE_LOGS_DB_DAYS (int): Number of days to retain log database entries
+    COMPRESS_PROMPT_CATALOGS (bool): Flag to enable compression of prompt catalogs.
 
 """
 
@@ -70,6 +72,7 @@ VERSION_CHECK_INTERVAL = 1200
 COOLDOWN_SYNC_INTERVAL = 900
 REASONING_SYNC_INTERVAL = 1800
 VERFIED_KEY_SYNC_INTERVAL = 600
+BACKUP_WEIGHT_SYNC_INTERVAL = 7200
 R2_SYNC_INTERVAL = 3600
 CATALOG_DUPE_THRESHOLD = 0.05
 RE_PRODUCT_NAME = re.compile(r"[^A-Za-z0-9 |-]")
@@ -82,8 +85,8 @@ MIN_UNIQUE_ENTITIES_FOR_BATCH = 2
 FRACTION_UNIQUE_ENTITIES_FOR_BATCH = 0.67
 MIN_UNIQUE_MODELS_FOR_BATCH = 2
 FRACTION_UNIQUE_MODELS_FOR_BATCH = 0.50
-QUERY_BATCH_SIZE = 14
-QUERY_TOP_N = 8
+QUERY_BATCH_SIZE = 12
+QUERY_TOP_N = 7
 MIN_QUERY_BATCH_SIZE = 3
 SCORE_DISPLAY_ENABLED = True
 SCORE_DISPLAY_INTERVAL = 900
@@ -95,3 +98,4 @@ EMISSION_CONTROL_TARGET_UID = 0
 VERIFIED_INFERENCE_URL = "https://verified.bitrecs.ai" if os.environ.get("NETWORK", "") == "mainnet" else "https://testnet.verified.bitrecs.ai"
 TRUNCATE_LOGS_ENABLED = True
 TRUNCATE_LOGS_DB_DAYS = 60
+COMPRESS_PROMPT_CATALOGS = False

@@ -45,7 +45,8 @@ from bitrecs.metrics.score_metrics import (
     check_score_health,
     run_complete_score_analysis
 )
-from bitrecs.utils.reasoning import ReasonReport
+from bitrecs.utils.reasoning import ReasoningReport
+from bitrecs.utils.rarity import RarityReport
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 
@@ -78,7 +79,7 @@ class Validator(BaseValidatorNeuron):
             raise Exception("Please set the BITRECS_PROXY_URL environment variable.")        
 
 
-    async def forward(self, pr : BitrecsRequest = None):
+    async def forward(self, request: BitrecsRequest = None):
         """
         Validator forward pass. Consists of:
         - Generating the query
@@ -89,7 +90,7 @@ class Validator(BaseValidatorNeuron):
         - Rewarding the miners
         - Updating the scores
         """                
-        return await forward(self, pr)
+        return await forward(self, request)
     
     
     @execute_periodically(timedelta(seconds=CONST.TEMPO_SYNC_INTERVAL))
@@ -141,15 +142,15 @@ class Validator(BaseValidatorNeuron):
         return
        
 
-    @execute_periodically(timedelta(seconds=CONST.ACTION_SYNC_INTERVAL))
-    async def action_sync(self):
-        """
-        #TODO: This method is currently a placeholder and does not perform any actions.
+    # @execute_periodically(timedelta(seconds=CONST.ACTION_SYNC_INTERVAL))
+    # async def action_sync(self):
+    #     """
+    #     #TODO: This method is currently a placeholder and does not perform any actions.
                 
-        """
-        bt.logging.trace(f"\033[35mAction sync ran at {int(time.time())}\033[0m")
-        self.user_actions = []
-        return
+    #     """
+    #     bt.logging.trace(f"\033[35mAction sync ran at {int(time.time())}\033[0m")
+    #     self.user_actions = []
+    #     return
     
     
     @execute_periodically(timedelta(seconds=CONST.R2_SYNC_INTERVAL))
@@ -161,7 +162,7 @@ class Validator(BaseValidatorNeuron):
         r2_enabled = self.config.r2.sync_on
         if not r2_enabled:
             bt.logging.trace(f"R2 Sync OFF at {int(time.time())}")        
-            bt.logging.warning(f"R2 Sync is OFF set --r2.sync_on to enable")
+            bt.logging.warning("R2 Sync is OFF set --r2.sync_on to enable")
             return
 
         start_time = time.perf_counter()
@@ -190,7 +191,7 @@ class Validator(BaseValidatorNeuron):
             if sync_result:
                 bt.logging.trace(f"\033[1;32m Success - R2 updated sync_result: {sync_result} \033[0m")
             else:
-                bt.logging.error(f"\033[1;31m Failed to update R2 \033[0m")
+                bt.logging.error("\033[1;31m Failed to update R2 \033[0m")
 
         except Exception as e:
             bt.logging.error(f"Failed to update R2 with exception: {e}")
@@ -203,11 +204,9 @@ class Validator(BaseValidatorNeuron):
     async def score_sync(self):
         """
         Enhanced score display with normalized weights and EMA insights
-        """
-        #bt.logging.trace(f"Score sync ran at {int(time.time())}")
+        """        
         bt.logging.info(f"\033[35mScore sync ran at {int(time.time())}\033[0m")
-        try:
-            # Get active scores (non-zero)
+        try:           
             active_scores = {}
             for uid, score in enumerate(self.scores):
                 if score > 0:
@@ -215,12 +214,9 @@ class Validator(BaseValidatorNeuron):
             
             if not active_scores:
                 bt.logging.info("No active scores to display")
-                return
+                return            
             
-            # Sort by score descending
             sorted_scores = sorted(active_scores.items(), key=lambda x: x[1], reverse=True)
-            
-            # Calculate statistics
             scores_array = np.array(list(active_scores.values()))
             stats = {
                 'count': len(active_scores),
@@ -250,13 +246,13 @@ class Validator(BaseValidatorNeuron):
                 bt.logging.info(f"Max/Min ratio: {max_min_ratio:.2f}")
             
             # Display top performers
-            bt.logging.info(f"\033[1;32m=== TOP PERFORMERS ===\033[0m")
+            bt.logging.info("\033[1;32m=== TOP PERFORMERS ===\033[0m")
             for i, (uid, score) in enumerate(sorted_scores[:10], 1):
                 percentile = (len(sorted_scores) - i + 1) / len(sorted_scores) * 100
                 bt.logging.info(f"{i:2d}. UID {uid:2d}: {score:.6f} ({percentile:.1f}%)")
             
             # Display score distribution
-            bt.logging.info(f"\033[1;34m=== SCORE DISTRIBUTION ===\033[0m")
+            bt.logging.info("\033[1;34m=== SCORE DISTRIBUTION ===\033[0m")
             quartiles = np.percentile(scores_array, [25, 50, 75])
             bt.logging.info(f"Q1: {quartiles[0]:.6f} | Q2: {quartiles[1]:.6f} | Q3: {quartiles[2]:.6f}")
             iqr = quartiles[2] - quartiles[0]
@@ -293,23 +289,6 @@ class Validator(BaseValidatorNeuron):
                 self.alpha_history.append(self.last_alpha_used)
                 if len(self.alpha_history) > 50:
                     self.alpha_history = self.alpha_history[-50:]
-            
-            # Log to wandb if enabled
-            # if self.config.wandb.enabled and self.wandb:
-            #     wandb_data = {
-            #         'scores/mean': stats['mean'],
-            #         'scores/std': stats['std'],
-            #         'scores/cv': stats['cv'],
-            #         'scores/max_min_ratio': stats['max']/stats['min'],
-            #         'scores/active_count': stats['count']
-            #     }
-                
-            #     # Log top 5 scores individually
-            #     for i, (uid, score) in enumerate(sorted_scores[:5], 1):
-            #         wandb_data[f'scores/top_{i}_uid'] = uid
-            #         wandb_data[f'scores/top_{i}_score'] = score
-                
-            #     self.wandb.log(self.step, wandb_data)
             
         except Exception as e:
             bt.logging.error(f"Error in enhanced score_sync: {e}")
@@ -352,7 +331,7 @@ class Validator(BaseValidatorNeuron):
             if not CONST.REASONING_SCORING_ENABLED:
                 return
             bt.logging.info(f"\033[35mReasoning sync ran at {int(time.time())}\033[0m")
-            reports = ReasonReport.get_reports()
+            reports = ReasoningReport.get_reports()
             if not reports or len(reports) == 0:
                 bt.logging.error("\033[31mNo reasoning reports found!\033[0m")
                 self.reasoning_reports = []
@@ -360,7 +339,7 @@ class Validator(BaseValidatorNeuron):
             self.reasoning_reports = reports
             bt.logging.info(f"Reasoning sync complete with \033[32m{len(self.reasoning_reports)}\033[0m reports")
             
-            delta = ReasonReport.get_delta_uids(reports, self.metagraph)
+            delta = ReasoningReport.get_delta_uids(reports, self.metagraph)
             self.missing_evals_uids = set(
                 uid for uid in self.total_uids
                 if uid in delta
@@ -368,16 +347,16 @@ class Validator(BaseValidatorNeuron):
             if len(self.missing_evals_uids) > 0:
                 bt.logging.warning(f"\033[33mReasoning evals delta: {list(self.missing_evals_uids)}\033[0m")
             else:
-                bt.logging.info(f"\033[32mAll miners have reasoning evals\033[0m")
+                bt.logging.info("\033[32mAll miners have reasoning evals\033[0m")
             
         except Exception as e:
             bt.logging.error(f"reasoning_sync Exception: {e}")
   
     
     @execute_periodically(timedelta(seconds=CONST.VERFIED_KEY_SYNC_INTERVAL))
-    async def verified_sync(self):        
+    async def verified_sync(self):
 
-        async def get_verified_public_key():
+        async def get_verified_public_key() -> Ed25519PublicKey:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 public_key_response = await client.get(f"{CONST.VERIFIED_INFERENCE_URL}/public_key")
                 public_key_response.raise_for_status()
@@ -389,9 +368,23 @@ class Validator(BaseValidatorNeuron):
         self.verified_public_key = await get_verified_public_key()
         if self.verified_public_key:
             bt.logging.info(f"\033[32mVerifier key loaded for network: {self.network}\033[0m")
+            self.rarity_reports = RarityReport.get_reports()
+            bt.logging.info(f"Verifier loaded \033[32m{len(self.rarity_reports)}\033[0m rarity reports")
         else:
             bt.logging.error(f"\033[31mFailed to load verifier key for network: {self.network}\033[0m")
             raise Exception("Failed to load verifier public key")
+        
+        
+    @execute_periodically(timedelta(seconds=CONST.BACKUP_WEIGHT_SYNC_INTERVAL))
+    async def weights_sync(self):
+        """
+        Weights are synced via the Validator inbound, this is a backup sync incase inbound fails for extended periods.
+        
+        """
+        bt.logging.info(f"\033[35mWeights sync ran at {int(time.time())}\033[0m")
+        if self.should_set_weights():
+            self.set_weights()
+            bt.logging.info("Weights synchronized via weights_sync.")
 
     
 
@@ -410,8 +403,9 @@ async def main():
                 asyncio.create_task(validator.version_sync()),
                 asyncio.create_task(validator.r2_sync()),
                 asyncio.create_task(validator.cooldown_sync()),
-                asyncio.create_task(validator.reasoning_sync())
-            ]                    
+                asyncio.create_task(validator.reasoning_sync()),
+                asyncio.create_task(validator.weights_sync())
+            ]
             if validator.config.logging.trace and CONST.SCORE_DISPLAY_ENABLED:
                 tasks.append(asyncio.create_task(validator.score_sync()))
                 

@@ -8,60 +8,48 @@ from bitrecs.protocol import MinerResponse, SignedResponse
 from bitrecs.utils import constants as CONST
 
 
-class OpenRouter:    
+class Perplexity:    
     def __init__(self, 
                  key,
-                 model="google/gemini-flash-1.5-8b", 
+                 model="sonar", 
                  system_prompt="You are a helpful assistant.", 
                  temp=0.0,
                  use_verified_inference: bool = False,
                  miner_wallet: "bt.Wallet" = None
         ):
 
-        self.OPENROUTER_API_KEY = key
-        if not self.OPENROUTER_API_KEY:
-            raise ValueError("OPENROUTER_API_KEY is not set")
+        self.PERPLEXITY_API_KEY = key
+        if not self.PERPLEXITY_API_KEY:
+            raise ValueError("PERPLEXITY_API_KEY is not set")
         self.model = model
         self.system_prompt = system_prompt
         self.temp = temp
         self.use_verified_inference = use_verified_inference
         self.miner_wallet = miner_wallet
-        self.provider = LLM.OPEN_ROUTER.name
+        self.provider = LLM.PERPLEXITY.name
 
-    def call_open_router(self, prompt) -> str:
+    def call_perplexity(self, prompt) -> str:
         if not prompt or len(prompt) < 10:
             raise ValueError()
 
-        url = "https://openrouter.ai/api/v1/chat/completions"
+        url = "https://api.perplexity.ai/chat/completions"
         headers = {
-            "Authorization": f"Bearer {self.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {self.PERPLEXITY_API_KEY}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://bitrecs.ai",
             "X-Title": "bitrecs"
-        }
-        reasoning = {
-            "enabled": False,
-            "exclude": True,
-            "effort": "minimal"
-        }
-        # Handle specific models that require different reasoning settings
-        if "gpt-5" in self.model.lower():
-            reasoning = {
-                "exclude": True,
-                "effort": "minimal"
-            }
+        }        
 
         payload = {
             "model": self.model,
             "messages": [
-                #{"role": "system", "content": "/no_think"},
                 {
                     "role": "user", 
                     "content": prompt
                 }],
-            "reasoning": reasoning,
             "stream": False,
-            "temperature": self.temp
+            "temperature": self.temp,
+            "extra_body": {"chat_template_kwargs": {"thinking": False }}
         }
         
         timeout = (5, 30) #connect, read timeout
@@ -85,7 +73,7 @@ class OpenRouter:
             raise RuntimeError(f"OpenRouter request failed: {e}") from e
         
 
-    def call_open_router_verified(self, prompt) -> MinerResponse:       
+    def call_perplexity_verified(self, prompt) -> MinerResponse:       
         if not prompt or len(prompt) < 10:
                 raise ValueError()
         if not self.use_verified_inference:
@@ -94,7 +82,7 @@ class OpenRouter:
             raise ValueError("miner_wallet is not set for verified inference")
         
         headers = {
-            "Authorization": f"Bearer {self.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {self.PERPLEXITY_API_KEY}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://bitrecs.ai",
             "x-title": "bitrecs",
@@ -102,32 +90,16 @@ class OpenRouter:
             "x-provider": self.provider
         }
         url = f"{CONST.VERIFIED_INFERENCE_URL}/v1/chat/completions"
-        reasoning = {
-            "enabled": False,
-            "exclude": True,
-            "effort": "minimal"
-        }
-        # Handle specific models that require different reasoning settings
-        if "gpt-5" in self.model.lower():
-            reasoning = {
-                "exclude": True,
-                "effort": "minimal"
-            }
-
         payload = {
             "model": self.model,
             "messages": [
-                #{"role": "system", "content": "/no_think"},
                 {
                     "role": "user", 
                     "content": prompt
                 }],
-            "reasoning": reasoning,
             "stream": False,
             "temperature": self.temp,
-            # "thinking": {
-            #     "type": "disabled"
-            # },
+            "extra_body": {"chat_template_kwargs": {"thinking": False }}
         }
         ts = str(int(time.time()))
         signature, nonce = sign_verified_request(self.miner_wallet, self.provider, payload, ts)

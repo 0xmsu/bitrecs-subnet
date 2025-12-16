@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 load_dotenv()
 import bittensor as bt
 import bitrecs.utils.constants as CONST
-from typing import List, Optional
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 from bitrecs.base.miner import BaseMinerNeuron
 from bitrecs.commerce.user_profile import UserProfile
@@ -155,24 +155,24 @@ class Miner(BaseMinerNeuron):
             sys.exit()      
 
         if self.llm_provider == LLM.VLLM:
-            bt.logging.info(f"\033[1;35m Please ensure vLLM Server is running\033[0m")
+            bt.logging.info("\033[1;35m Please ensure vLLM Server is running\033[0m")
         elif self.llm_provider == LLM.OLLAMA_LOCAL:
-            bt.logging.info(f"\033[1;35m Please ensure Ollama Server is running\033[0m")
+            bt.logging.info("\033[1;35m Please ensure Ollama Server is running\033[0m")
         else:
-            bt.logging.info(f"\033[1;35m Please ensure your API keys are set in the environment\033[0m")             
+            bt.logging.info("\033[1;35m Please ensure your API keys are set in the environment\033[0m")             
 
-        bt.logging.info(f"\033[1;35m Miner is warming up\033[0m")
+        bt.logging.info("\033[1;35m Miner is warming up\033[0m")
         warmup_result = self.warmup()
         if not warmup_result:
-            bt.logging.error(f"\033[31mMiner warmup failed. Exiting.\033[0m")
+            bt.logging.error("\033[31mMiner warmup failed. Exiting.\033[0m")
             sys.exit()
         if not self.model:
-            bt.logging.error(f"\033[31mMiner model not set. Exiting.\033[0m")
+            bt.logging.error("\033[31mMiner model not set. Exiting.\033[0m")
             sys.exit()
 
         best_performing_uid = best_uid(self.metagraph)        
         if self.uid == best_performing_uid:
-            bt.logging.info(f"\033[1;32m 🐸 You are the BEST performing miner in the subnet, keep it up!\033[0m")
+            bt.logging.info("\033[1;32m 🐸 You are the BEST performing miner in the subnet, keep it up!\033[0m")
 
         self.total_request_in_interval = 0
         
@@ -181,11 +181,11 @@ class Miner(BaseMinerNeuron):
 
         self.use_verified_inference : bool = self.config.verified.inference
         if self.use_verified_inference:
-            bt.logging.info(f"\033[1;32m 🐸 Miner using VERIFIED INFERENCE\033[0m")
-            bt.logging.info(f"To be trusted is a greater compliment than to be loved. - George MacDonald")
+            bt.logging.info("\033[1;32m 🐸 Miner using VERIFIED INFERENCE\033[0m")
+            bt.logging.info("To be trusted is a greater compliment than to be loved. - George MacDonald")
         else:
-            bt.logging.info(f"\033[1;33m 🐸 Miner using STANDARD INFERENCE\033[0m")
-            bt.logging.info(f"I'm not upset that you lied to me, I'm upset that from now on I can't believe you. - Friedrich Nietzsche")
+            bt.logging.info("\033[1;33m 🐸 Miner using STANDARD INFERENCE\033[0m")
+            bt.logging.info("I'm not upset that you lied to me, I'm upset that from now on I can't believe you. - Friedrich Nietzsche")
     
 
     async def forward(
@@ -230,7 +230,7 @@ class Miner(BaseMinerNeuron):
             bt.logging.error(f"\033[31mFATAL ERROR calling do_work: {e!r} \033[0m")
         finally:
             et = time.time()
-            bt.logging.trace(f"\033[1;32m{self.model} Elapsed Time: {et-st} \033[0m")
+            bt.logging.info(f"\033[1;32m{self.model} Elapsed Time: {et-st} \033[0m")
       
         #Do some cleanup - schema is validated in the reward function
         final_results = []
@@ -283,7 +283,7 @@ class Miner(BaseMinerNeuron):
             miner_signature="", 
             verified_proof=miner_response.signed_response.model_dump() if miner_response and miner_response.signed_response else None
         )
-        payload_hash = self.sign_response(output_synapse)
+        payload_hash = self.compute_payload_hash(output_synapse)
         signature = self.wallet.hotkey.sign(payload_hash)
         output_synapse.miner_signature = signature.hex()
 
@@ -294,7 +294,7 @@ class Miner(BaseMinerNeuron):
         return output_synapse
     
 
-    def sign_response(self, output_synapse: BitrecsRequest) -> bytes:
+    def compute_payload_hash(self, output_synapse: BitrecsRequest) -> bytes:
         payload = {
             "name": output_synapse.name,
             "axon_hotkey": output_synapse.axon.hotkey,
@@ -435,17 +435,27 @@ class Miner(BaseMinerNeuron):
             case LLM.OLLAMA_LOCAL:
                 model = "mistral-nemo"                
             case LLM.OPEN_ROUTER:
-                model = "google/gemini-2.0-flash-lite-001"
+                model = "x-ai/grok-4.1-fast"
             case LLM.CHAT_GPT:
                 model = "gpt-4o-mini"
             case LLM.VLLM:
                 model = "NousResearch/Meta-Llama-3-8B-Instruct"                
-            case LLM.GEMINI:                                
-                model = "gemini-2.0-flash-001"
+            case LLM.GEMINI:
+                model = "gemini-2.5-flash-lite"
             case LLM.GROK:
-                model = "grok-beta"
+                model = "grok-4-1-fast-non-reasoning"
             case LLM.CLAUDE:
                 model = "anthropic/claude-3.5-haiku"
+            case LLM.CHUTES:
+                model = "Qwen/Qwen3-Next-80B-A3B-Instruct"
+            case LLM.CEREBRAS:
+                model = "qwen-3-235b-a22b-instruct-2507"
+            case LLM.GROQ:
+                model = "qwen/qwen3-32b"
+            case LLM.NVIDIA:
+                model = "qwen/qwen3-next-80b-a3b-instruct"
+            case LLM.PERPLEXITY:
+                model = "sonar"
             case _:
                 bt.logging.error("Unknown LLM server")
                 raise ValueError("Unknown LLM server")
@@ -464,7 +474,7 @@ class Miner(BaseMinerNeuron):
             bt.logging.info(f"Warmup SUCCESS: {self.model} - Result: {result}")
             return True
         except Exception as e:            
-            bt.logging.warning(f"\033[33mMake sure you are calling an LLM, thats the whole point of this subnet...\033[0m")
+            bt.logging.warning("\033[33mMake sure you are calling an LLM, thats the whole point of this subnet...\033[0m")
             bt.logging.error(f"\033[31mFATAL ERROR calling warmup: {e!r} \033[0m")
         return False
     
@@ -504,7 +514,7 @@ async def main():
                     f"---Total request in last 5 minutes: {miner.total_request_in_interval}"
                 )
                 if miner.use_verified_inference:
-                    bt.logging.info(f"\033[32m---Miner using Verified Inference\033[0m")
+                    bt.logging.info("\033[32m---Miner using Verified Inference\033[0m")
 
                 start_time = time.time()
                 miner.total_request_in_interval = 0

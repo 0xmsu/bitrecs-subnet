@@ -30,16 +30,17 @@ from bitrecs.commerce.user_action import UserAction
 from bitrecs.protocol import BitrecsRequest, SignedResponse
 from bitrecs.commerce.product import Product, ProductFactory
 from bitrecs.utils import constants as CONST
-from bitrecs.utils.reasoning import ReasonReport
+from bitrecs.utils.color import RarityTier
+from bitrecs.utils.rarity import RarityReport
+from bitrecs.utils.reasoning import ReasoningReport
 from bitrecs.llms.prompt_factory import PromptFactory
-
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.exceptions import InvalidSignature
 
 BASE_REWARD = 0.80
 CONSENSUS_BONUS_MULTIPLIER = 1.05
 REASONING_BONUS_MULTIPLIER = 1.025
-VERFIED_BONUS_MULTIPLIER = 1.15
+VERIFIED_BONUS_MULTIPLIER = 1.15
 SUSPECT_MINER_DECAY = 0.980
 PERMITTED_CLOCK_DIFF_SECONDS = 300
 
@@ -201,14 +202,13 @@ def verify_proof_with_recs(
         return False
 
 
-
-
 def reward(
     validator_hotkey: str,
     ground_truth: BitrecsRequest,
     catalog_validator: CatalogValidator, 
     response: BitrecsRequest,
-    reasoning_report: ReasonReport = None,
+    reasoning_report: ReasoningReport = None,
+    rarity_reports: List[RarityReport] = None,
     actions: List[UserAction] = None,
     r_limit: float = 1.0,
     max_f_score: float = 1.0,
@@ -317,15 +317,26 @@ def reward(
                 score_notes.append("Reasoning_Bonus")
 
         if response.verified_proof and response.verified_proof != {} and verified_public_key:
-            signed_response = SignedResponse(**response.verified_proof)            
+            signed_response = SignedResponse(**response.verified_proof)
             verified = verify_proof_with_recs(valid_items, signed_response, verified_public_key)
             if not verified:
-                bt.logging.error(f"{response.axon.hotkey[:8]} Verified Inference Failed: {response.miner_uid}")
+                bt.logging.error(f"{response.axon.hotkey[:8]}|{response.miner_uid} VI Failed")
                 return 0.0, "Invalid_Verified_Proof"
             else:
-                score *= VERFIED_BONUS_MULTIPLIER
-                bt.logging.trace(f"\033[32m{response.axon.hotkey[:8]} Verified Inference Success: {response.miner_uid}\033[0m")
+                rarity_stat, rarity_tier = "NA"
                 score_notes.append("Verified_Proof_Bonus")
+                base_multiplier = VERIFIED_BONUS_MULTIPLIER
+                signed_model = PromptFactory.extract_model_from_proof(signed_response)
+                rarity_report = get_rarity_report(signed_model, rarity_reports)
+                if rarity_report and rarity_report.bonus >= 1.0:
+                    base_multiplier *= rarity_report.bonus
+                    rarity_tier = rarity_report.tier
+                    rarity_stat = rarity_report.rarity
+                    score_notes.append(f"Rarity_{rarity_tier}")
+                    tier_icon = RarityTier.get_tier_icon(rarity_tier)
+
+                score *= base_multiplier
+                bt.logging.trace(f"\033[32m{response.axon.hotkey[:8]}|{response.miner_uid} VI Success, Rarity: {tier_icon} ({rarity_stat})\033[0m")
         
         notes = " | ".join(score_notes)
         return score, notes
@@ -339,7 +350,8 @@ def get_rewards(
     validator_hotkey: str,
     ground_truth: BitrecsRequest,
     responses: List[BitrecsRequest],
-    reasoning_reports: List[ReasonReport] = None,
+    reasoning_reports: List[ReasoningReport] = None,
+    rarity_reports: List[RarityReport] = None,
     actions: List[UserAction] = None,    
     r_limit: float = 1.0,
     batch_size: int = 16,
@@ -351,7 +363,9 @@ def get_rewards(
     - validator_hotkey: The hotkey of the validator.
     - ground_truth: The BitrecsRequest object containing the ground truth query
     - responses: A list of BitrecsRequest objects containing the responses from miners.
-    - actions: A list of UserAction objects containing the actions performed by users.
+    - reasoning_reports: A list of ReasoningReport objects containing the reasoning scores for each miner.
+    - rarity_reports: A list of RarityReport objects containing the verified rarity scores for models.
+    - actions: A list of UserAction objects containing the actions performed by shoppers.
     - r_limit: The rlimit for responses.
     - batch_size: The number of responses in this batch.
     - entity_threshold: The threshold for considering nodes as entities.
@@ -372,10 +386,13 @@ def get_rewards(
     catalog_validator = CatalogValidator(store_catalog)
 
     if not reasoning_reports or len(reasoning_reports) == 0:
-        bt.logging.warning(f"\033[1;33m WARNING - no reasoning_reports found in get_rewards \033[0m")
+        bt.logging.warning("\033[1;33m WARNING - no reasoning_reports found in get_rewards \033[0m")
+
+    if not rarity_reports or len(rarity_reports) == 0:
+        bt.logging.warning("\033[1;33m WARNING - no rarity_reports found in get_rewards \033[0m")
 
     if not actions or len(actions) == 0:
-        bt.logging.warning(f"\033[1;33m WARNING - no actions found in get_rewards \033[0m")
+        bt.logging.warning("\033[1;33m WARNING - no actions found in get_rewards \033[0m")
 
     axon_times = []
     for response in responses:
@@ -429,30 +446,33 @@ def get_rewards(
     difficulty_statement = get_difficulty_statement(difficulty_decay)
     bt.logging.trace(f"{difficulty_statement}")
     if not CONST.DIFFICULTY_SCORING_ENABLED:
-        bt.logging.trace(f"\033[33mDifficulty adjustment skipped!\033[0m")
+        bt.logging.trace("\033[33mDifficulty adjustment skipped!\033[0m")
     
     if CONST.REASONING_SCORING_ENABLED:
-        bt.logging.trace(f"\033[32mReasoning scoring is enabled\033[0m")
+        bt.logging.trace("\033[32mReasoning scoring is enabled\033[0m")
 
     rewards = []
     reward_notes = []
+    max_f_score = max((r.f_score for r in reasoning_reports), default=1.0)
     for i, response in enumerate(responses):
         if response.axon.ip in entity_ips and not CONST.REWARD_ENTITIES:
             rewards.append(0.0)
             reward_notes.append("Entity_No_Reward")
             continue
         
-        r_report = get_reasoning_report(response, reasoning_reports)
-        max_f_score = max((r.f_score for r in reasoning_reports), default=1.0)
-        miner_reward, reward_note = reward(validator_hotkey, 
-                              ground_truth, 
-                              catalog_validator, 
-                              response, 
-                              r_report, 
-                              actions, 
-                              r_limit, 
-                              max_f_score, 
-                              verified_public_key)
+        r_report = get_reasoning_report(response, reasoning_reports)        
+        miner_reward, reward_note = reward(
+            validator_hotkey,
+            ground_truth,
+            catalog_validator,
+            response,
+            r_report,
+            rarity_reports,
+            actions,
+            r_limit,
+            max_f_score,
+            verified_public_key
+        )       
         reward_notes.append(reward_note)
         if miner_reward <= 0.0:
             rewards.append(0.0)
@@ -519,10 +539,11 @@ def get_difficulty_statement(difficulty: float) -> str:
     else:
         return f"Difficulty is hard: \033[1;31m{difficulty:.3f}\033[0m"
     
+
 def get_reasoning_report(
     response: BitrecsRequest,
-    reasoning_reports: List[ReasonReport] = None
-) -> ReasonReport | None:
+    reasoning_reports: List[ReasoningReport] = None
+) -> ReasoningReport | None:
     if not reasoning_reports or len(reasoning_reports) == 0:
         return None
     reasoning_report = next(
@@ -530,3 +551,17 @@ def get_reasoning_report(
         None
     )
     return reasoning_report
+
+
+def get_rarity_report(
+    model: str,
+    rarity_reports: List[RarityReport] = None
+) -> RarityReport | None:
+    if not rarity_reports or len(rarity_reports) == 0:
+        return None
+    normalized_model = model.split('/')[-1] if '/' in model else model
+    report = next(
+        (r for r in rarity_reports if r.model.lower().strip() == normalized_model.lower().strip()),
+        None
+    )
+    return report
