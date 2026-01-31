@@ -1,0 +1,32 @@
+name: Sync Fork with Upstream
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Her 6 saatte bir kontrol et
+  workflow_dispatch:  # Manuel tetikleme butonu
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync with Upstream
+        run: |
+          git remote add upstream https://github.com/bitrec-ai/bitrecs-subnet.git
+          git fetch upstream
+          git checkout main
+          git merge upstream/main --no-edit || echo "Nothing to merge or conflict"
+          git push origin main
