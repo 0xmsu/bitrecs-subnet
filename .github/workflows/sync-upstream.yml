@@ -25,7 +25,7 @@ jobs:
 
       - name: Sync with Upstream
         run: |
-          git remote add upstream https://github.com/bitrec-ai/bitrecs-subnet.git
+          git remote add upstream https://github.com/bitrecs/bitrecs-subnet.git
           git fetch upstream
           git checkout main
           git merge upstream/main --no-edit || echo "Nothing to merge or conflict"
